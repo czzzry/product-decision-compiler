@@ -1,0 +1,58 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+credential/
+oauth/
+tokens/
+token.json
+credentials.json
+client_secret*.json
+*oauth*.json
+*token*.json
+*.pem
+*.key
+
+# Private data and generated private outputs
+data/private/**
+!data/private/.gitkeep
+outputs/private/**
+!outputs/private/.gitkeep
+private_email/
+gmail_exports/
+mail_exports/
+*.mbox
+*.eml
+
+# Local databases and state
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Editors and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
