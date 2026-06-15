@@ -53,6 +53,59 @@ class FounderBriefing(StrictModel):
     recommended_next_action: str
 
 
+class ProductRisk(StrictModel):
+    category: Literal["product", "user", "privacy", "security", "operational", "adoption"]
+    description: str
+    mitigation: str
+
+
+class ProductAdvisory(StrictModel):
+    understanding_of_objective: str
+    clarifying_questions: list[str]
+    assumptions: list[str] = Field(min_length=1)
+    product_recommendations: list[str] = Field(min_length=1)
+    alternative_options: list[str] = Field(min_length=1)
+    risks: list[ProductRisk] = Field(min_length=1)
+    proposed_scope: list[str] = Field(min_length=1)
+    explicit_non_goals: list[str] = Field(min_length=1)
+    proposed_acceptance_criteria: list[str] = Field(min_length=1)
+    proposed_success_metrics: list[str] = Field(min_length=1)
+    decisions_requiring_founder_approval: list[str] = Field(min_length=1)
+    founder_authority_statement: Literal[
+        "These are ProductAgent recommendations, not Founder-approved decisions."
+    ]
+    implementation_commissioning_blocked: Literal[True]
+    founder_briefing: FounderBriefing
+
+
+class ModelRequest(StrictModel):
+    prompt_version: str
+    system_prompt: str
+    untrusted_product_input: str
+
+
+class ModelUsage(StrictModel):
+    provider: str
+    model: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    estimated_cost_usd: float | None = None
+    cost_basis: str
+
+
+class ModelGeneration(StrictModel):
+    raw_output: str
+    usage: ModelUsage
+
+
+class AdvisoryResult(StrictModel):
+    specification_version: str
+    prompt_version: str
+    advisory: ProductAdvisory
+    model_usage: ModelUsage
+
+
 class ProductAgentResponse(StrictModel):
     role: Literal["ProductAgent"]
     role_version: str
@@ -62,6 +115,7 @@ class ProductAgentResponse(StrictModel):
     approved_decisions: list[str]
     refused_actions: list[str]
     safety_notes: list[str]
+    advisory_result: AdvisoryResult
     founder_briefing: FounderBriefing
 
 

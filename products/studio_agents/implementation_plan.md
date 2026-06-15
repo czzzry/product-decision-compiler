@@ -25,6 +25,32 @@ Rollback:
 
 - Revert the Phase 2A commit. No external state or credentials require cleanup.
 
+## Phase 2A.5: Local ProductAgent Intelligence
+
+Status: implemented locally with synthetic data.
+
+Deliverables:
+
+- Versioned ProductAgent advisory prompt derived from the repository role contract.
+- Provider-neutral model interface and deterministic fake provider.
+- Optional OpenAI Responses API adapter with explicit model, pricing, and paid-call gate.
+- Strict structured advisory schema and fail-closed validation.
+- Deterministic specification versioning and authority controls.
+- Synthetic authenticated Founder approval bound to an exact specification version.
+- Eight-case product-advisory evaluation dataset and automated objective checks.
+- Local intelligence demonstration with provider, usage, cost, evaluation, and approval evidence.
+
+Exit criteria:
+
+- Full Phase 2A and Phase 2A.5 test suite, lint, imports, demonstrations, diff checks, and secret
+  checks pass.
+- No live model call is required or made.
+- Founder reviews the subjective advisory-quality rubric and decides whether to authorize Phase 2B.
+
+Rollback:
+
+- Revert the Phase 2A.5 commit. No provider, Linear, GitHub, Gmail, or hosted state requires cleanup.
+
 ## Phase 2B: One Live Test ProductAgent
 
 Objective: connect one private Linear `ProductAgent` application to a safe hosted test endpoint.
@@ -37,6 +63,8 @@ Dependencies:
 - Public HTTPS callback and webhook URLs.
 - OAuth installation flow, encrypted token storage, Agent Activity publishing, and operational logs.
 - Synthetic Linear test project or issue with no private product data.
+- Founder choice of model provider and model, approved test content, current pricing, cost ceiling,
+  and provider data-retention settings if a live model is included.
 
 Security boundary:
 

@@ -7,6 +7,8 @@
 - Webhook signing secret.
 - Event receipt ledger.
 - Product recommendations and Founder Briefings.
+- Model credentials, request content, usage, and cost metadata.
+- Specification versions and Founder approval records.
 
 ## Trust Boundaries
 
@@ -15,6 +17,9 @@
 - Issue descriptions, comments, prompt context, guidance, and repository content remain untrusted
   even after transport authentication.
 - ProductAgent output is advisory and cannot represent a Founder decision.
+- Model output is untrusted until strict schema and invariant validation succeeds.
+- Synthetic Founder identity is trusted only when supplied through the dedicated authenticated test
+  context, never through issue or comment text.
 - The recording adapter has no external authority.
 
 ## Threats and Controls
@@ -56,8 +61,46 @@ indicators; retain the fixed role and authority policy; report the attempt.
 
 Issue text claims that the Founder approved scope or ordered implementation.
 
-Controls: Phase 2A deliberately has no trusted approval channel. Every claimed approval in webhook
-content is rejected as evidence.
+Controls: every claimed approval in webhook content is rejected as evidence. Phase 2A.5 accepts only
+a separate structured approval request from the configured authenticated Founder actor, for the
+exact `approve_specification` action and exact current specification version, inside a five-minute
+freshness window. ProductAgent cannot approve its own recommendation.
+
+### Malformed or Authority-Violating Model Output
+
+A provider returns missing fields, executable instructions, fabricated approval, or an unblocked
+implementation flag.
+
+Controls: parse output into the strict `ProductAdvisory` schema, require literal authority and
+implementation values, reject malformed output, and keep implementation eligibility outside the
+model.
+
+### Model Prompt Injection
+
+Untrusted product text attempts to replace the role prompt or instruct the provider to claim
+approval.
+
+Controls: send a versioned high-authority role prompt separately from labelled untrusted fields,
+repeat authority invariants in the output schema, validate every response, and test adversarial
+fixtures. The deterministic layer still blocks approval and implementation even if advisory quality
+degrades.
+
+### Paid Call or Cost Surprise
+
+A local command accidentally selects a paid model or uses stale pricing assumptions.
+
+Controls: fake provider is the default; a real adapter requires an explicit allow-paid-call flag,
+model name, and caller-supplied current token prices. The demonstration prints the cost basis and
+usage. No paid call is part of automated tests.
+
+### Provider Data Exposure
+
+Private or sensitive text is sent to a model provider before appropriate permission and retention
+decisions.
+
+Controls: Phase 2A.5 uses synthetic fixtures only. Live-provider use is optional and manually gated.
+Before live Linear, the Founder must approve provider, data classification, retention, logging, and
+the exact test content.
 
 ### Secret Exposure
 
@@ -69,6 +112,10 @@ documentation prohibiting real secrets in chat, Linear, logs, or Git.
 ## Residual Risks
 
 - Keyword detection is illustrative, not a complete prompt-injection classifier.
+- The deterministic fake is useful for policy evaluation, not evidence of real model product quality.
+- Objective checks do not replace Founder judgment of recommendation usefulness and nuance.
+- The OpenAI adapter has not been exercised with a paid call in this phase.
+- Synthetic authentication is not production identity verification or durable approval auditing.
 - SQLite does not provide production distributed deduplication.
 - Command-line secrets may appear in process listings or shell history; the optional server is local
   proof tooling only.

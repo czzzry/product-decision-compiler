@@ -2,12 +2,16 @@
 
 ## Plain-English Summary
 
-Phase 2A is a working local demonstration of the future `@ProductAgent` boundary. It accepts
+Phase 2A is a working local demonstration of the future `@ProductAgent` transport boundary. It accepts
 synthetic Linear-shaped webhook events, checks that they were signed with the expected local
 secret, rejects stale or repeated deliveries, loads a versioned ProductAgent contract, and produces
 product questions, recommendations, refusals, safety notes, and the eight-part Founder Briefing.
 
-The proof never calls Linear, GitHub, Gmail, an LLM provider, or any other external service.
+Phase 2A.5 adds a provider-neutral product intelligence interface, a deterministic local fake model,
+a strict advisory-output schema, a versioned ProductAgent prompt, synthetic Founder approvals tied
+to exact specification versions, and an eight-case evaluation set.
+
+The default proof never calls Linear, GitHub, Gmail, an LLM provider, or any other external service.
 
 ## Setup
 
@@ -38,6 +42,29 @@ The command runs six synthetic cases:
 The output explains each decision in plain English and prints the complete Founder Briefing for
 accepted events.
 
+## Run the Intelligence Demonstration
+
+```bash
+.venv/bin/python -m ai_native_studio.product_agent_proof.intelligence_demo
+```
+
+This is the Phase 2A.5 acceptance command. It uses the deterministic fake provider, makes no network
+request, and costs nothing. It demonstrates:
+
+1. A vague idea that produces clarifying product questions.
+2. An over-scoped idea that produces a narrower proposed experiment.
+3. A privacy-sensitive injection and BuilderAgent commissioning attempt that remains advisory.
+4. Eight synthetic evaluation cases passing automated policy checks.
+5. An authenticated synthetic Founder approval for one exact specification version.
+6. Rejection of approval language quoted inside untrusted content.
+
+The repository also contains an OpenAI Responses API adapter. It has no default model or embedded
+pricing. A real call requires an explicit provider selection, model name, current input and output
+prices, an allow-paid-call flag, and `OPENAI_API_KEY` in the local environment. No real model call was
+made during Phase 2A.5. The adapter follows the official [Responses API create
+reference](https://developers.openai.com/api/reference/resources/responses/methods/create) and
+[Structured Outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs).
+
 ## Optional Local HTTP Endpoint
 
 The same service can listen locally at `POST /webhooks/linear`:
@@ -63,13 +90,21 @@ the command line, in chat, in Linear, or in Git.
 - Untrusted text cannot grant Founder approval or commission implementation.
 - ProductAgent returns structured output and all eight Founder Briefing sections.
 - A mock adapter records responses without network access.
+- Product advice can be produced behind a provider-neutral interface and validated against a strict
+  Pydantic schema before use.
+- Deterministic controls, not the model, decide authentication, freshness, deduplication, routing,
+  Founder authority, and implementation eligibility.
+- Synthetic Founder approval is authenticated, fresh, action-specific, and bound to an exact
+  specification version.
+- The local evaluation set exercises vague, over-scoped, privacy-sensitive, adversarial, delegated,
+  implementation, clear, and conflicting product requests.
 
 ## What This Phase Does Not Prove
 
 - Live Linear OAuth installation, webhook delivery, or Agent Session activity creation.
 - Secret-manager integration, refresh-token handling, hosting, queues, or production monitoring.
-- A trusted mechanism for recording Founder approvals.
-- Model-generated product analysis or model safety.
+- A production-trusted mechanism for recording Founder approvals.
+- Quality, safety, cost, or latency of any live model provider.
 - BuilderAgent, VerifierAgent, GitHub, Gmail, or private-data access.
 - Multi-process SQLite behavior, production concurrency, or long-term audit retention.
 
@@ -84,6 +119,8 @@ the command line, in chat, in Linear, or in Git.
    publishing are implemented and tested.
 6. The Founder installs the app with only approved teams and least-privilege scopes.
 7. A synthetic test issue is used before any real product or private content.
+
+The exact proposed Phase 2B execution prompt is stored in `phase_2b_prompt.md`.
 
 Client secrets, signing secrets, access tokens, and refresh tokens must never be pasted into chat,
 Linear issues or comments, source files, logs, or Git history.

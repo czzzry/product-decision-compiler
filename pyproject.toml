@@ -16,10 +16,11 @@ dev = [
 
 [project.scripts]
 product-agent-demo = "ai_native_studio.product_agent_proof.demo:main"
+product-agent-intelligence-demo = "ai_native_studio.product_agent_proof.intelligence_demo:main"
 product-agent-server = "ai_native_studio.product_agent_proof.server:main"
 
 [tool.setuptools.package-data]
-"ai_native_studio.product_agent_proof" = ["config/*.json"]
+"ai_native_studio.product_agent_proof" = ["config/*.json", "config/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

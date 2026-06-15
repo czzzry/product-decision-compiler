@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from .adapter import LinearAdapter
 from .dedup import ReceiptResult, WebhookReceiptStore
+from .intelligence import IntelligenceError, ProductAdvisoryModel
 from .models import AgentSessionEvent, WebhookResult
 from .policy import ProductAgentPolicy
 from .role_config import ProductAgentRoleConfig
@@ -24,6 +25,7 @@ class ProductAgentWebhookService:
         role: ProductAgentRoleConfig,
         receipt_store: WebhookReceiptStore,
         linear_adapter: LinearAdapter,
+        model: ProductAdvisoryModel | None = None,
         timestamp_tolerance_seconds: int = 60,
     ) -> None:
         self._secret = secret
@@ -31,7 +33,7 @@ class ProductAgentWebhookService:
         self._receipt_store = receipt_store
         self._linear_adapter = linear_adapter
         self._timestamp_tolerance_seconds = timestamp_tolerance_seconds
-        self._policy = ProductAgentPolicy(role)
+        self._policy = ProductAgentPolicy(role, model)
 
     def handle(
         self,
@@ -86,7 +88,10 @@ class ProductAgentWebhookService:
                 403,
             )
 
-        response = self._policy.evaluate(event)
+        try:
+            response = self._policy.evaluate(event)
+        except IntelligenceError as error:
+            return self._rejection("model_output_rejected", str(error), 502)
         self._linear_adapter.publish_response(event.agent_session.id, response)
         return WebhookResult(
             status="accepted",

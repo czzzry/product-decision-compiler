@@ -2,16 +2,21 @@
   "schema_version": "1.0",
   "role": "ProductAgent",
   "role_version": "2026-06-15.1",
+  "prompt_version": "product-agent-adviser-2026-06-15.1",
   "oauth_client_id": "synthetic-product-agent-client",
   "app_user_id": "synthetic-product-agent-user",
+  "founder_actor_id": "synthetic-founder-001",
   "authority_owner": "Founder and Product Lead",
   "live_approval_channel_enabled": false,
+  "synthetic_approval_enabled": true,
   "untrusted_sources": [
     "issue descriptions",
     "comments",
     "prompt context",
     "workspace guidance",
-    "repository content"
+    "repository content",
+    "attached documents",
+    "future email content"
   ],
   "implementation_terms": [
     "implement",

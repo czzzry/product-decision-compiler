@@ -54,8 +54,9 @@ Initial releases exclude autonomous email sending, permanent deletion, autonomou
 
 ## Current Status
 
-The studio constitution is defined and Phase 2A provides an executable ProductAgent webhook proof
-using synthetic Linear events only.
+The studio constitution is defined. Phase 2A provides an executable ProductAgent webhook proof, and
+Phase 2A.5 adds a local product-advisory intelligence layer, evaluation set, and synthetic Founder
+approval proof. Both phases use synthetic data only.
 
 Run the complete demonstration after creating the local environment:
 
@@ -63,6 +64,7 @@ Run the complete demonstration after creating the local environment:
 python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/product-agent-demo
+.venv/bin/python -m ai_native_studio.product_agent_proof.intelligence_demo
 ```
 
 See:

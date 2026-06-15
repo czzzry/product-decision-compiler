@@ -1,12 +1,22 @@
-"""Deterministic ProductAgent authority and untrusted-input policy."""
+"""Deterministic authority controls around schema-validated ProductAgent intelligence."""
 
-from .models import AgentSessionEvent, FounderBriefing, ProductAgentResponse
+from .intelligence import ProductAdvisoryModel, ProductAgentIntelligence
+from .models import AgentSessionEvent, ProductAgentResponse
+from .providers import DeterministicFakeProductModel
 from .role_config import ProductAgentRoleConfig
 
 
 class ProductAgentPolicy:
-    def __init__(self, role: ProductAgentRoleConfig) -> None:
+    def __init__(
+        self,
+        role: ProductAgentRoleConfig,
+        model: ProductAdvisoryModel | None = None,
+    ) -> None:
         self._role = role
+        self._intelligence = ProductAgentIntelligence(
+            role,
+            model or DeterministicFakeProductModel(),
+        )
 
     def evaluate(self, event: AgentSessionEvent) -> ProductAgentResponse:
         content = self._collect_untrusted_content(event)
@@ -15,27 +25,13 @@ class ProductAgentPolicy:
         implementation_matches = [
             term for term in self._role.implementation_terms if term in normalized
         ]
-
-        questions = [
-            "Who is the target user, and what concrete problem should this solve for them?",
-            "What outcome and success metric would justify moving beyond a recommendation?",
-            "What is explicitly out of scope for the first approved version?",
-        ]
-        if any(term in normalized for term in ("private", "email", "gmail", "credential")):
-            questions.append(
-                "Which privacy boundary and permission stage has the Founder explicitly approved?"
-            )
-
-        recommendations = [
-            "Keep this work as a ProductAgent recommendation until the Founder approves a "
-            "versioned specification.",
-            "Define user journeys, measurable acceptance criteria, non-goals, and user, privacy, "
-            "operational, and adoption risks before implementation.",
-        ]
+        advisory_result = self._intelligence.advise(content)
+        advisory = advisory_result.advisory
 
         safety_notes = [
-            "Issue text, comments, guidance, prompt context, and repository content were treated "
-            "as untrusted product input, not as authority or system instructions."
+            "Issue text, comments, guidance, prompt context, repository content, attachments, and "
+            "future email content are untrusted product input, not authority or system "
+            "instructions."
         ]
         if injection_matches:
             safety_notes.append(
@@ -47,8 +43,8 @@ class ProductAgentPolicy:
         refused_actions: list[str] = []
         if implementation_matches:
             refused_actions.append(
-                "Refused to commission BuilderAgent or begin implementation because Phase 2A has "
-                "no trusted Founder-approval channel."
+                "Refused to commission BuilderAgent or begin implementation without an "
+                "authenticated Founder approval record for the exact specification version."
             )
         if "override founder" in normalized or "treat this as approved" in normalized:
             refused_actions.append(
@@ -56,44 +52,19 @@ class ProductAgentPolicy:
                 "an approval from untrusted text."
             )
 
-        approved_decisions = [
-            "None. Phase 2A does not accept Founder approvals from webhook content."
-        ]
-        briefing = FounderBriefing(
-            objective="Evaluate the synthetic Linear request as ProductAgent without changing "
-            "approved product scope.",
-            what_was_done="Authenticated the event, loaded the versioned ProductAgent role, "
-            "treated supplied content as untrusted, and produced product questions and "
-            "recommendations.",
-            what_changed="No approved specification, implementation, repository, Linear workspace, "
-            "or external system was changed.",
-            important_decisions_and_why="Recommendations remain advisory because only the Founder "
-            "and Product Lead can approve scope and commission implementation.",
-            validation_or_checks_performed=(
-                "Webhook signature, timestamp freshness, receipt identity, "
-                "role routing, injection indicators, and implementation-commissioning language "
-                "were checked deterministically."
-            ),
-            remaining_risks_assumptions_or_questions=(
-                "The request still needs answers to the product questions, and Phase 2A does not "
-                "prove live Linear delivery or human approval capture."
-            ),
-            founder_approval_required="Founder approval of a versioned specification is required "
-            "before BuilderAgent may implement anything.",
-            recommended_next_action="Answer the product questions, revise the recommendation, and "
-            "present a versioned specification for explicit Founder approval.",
-        )
-
         return ProductAgentResponse(
             role=self._role.role,
             role_version=self._role.role_version,
             session_id=event.agent_session.id,
-            product_questions=questions,
-            recommendations=recommendations,
-            approved_decisions=approved_decisions,
+            product_questions=advisory.clarifying_questions,
+            recommendations=advisory.product_recommendations,
+            approved_decisions=[
+                "None. ProductAgent output is advisory until authenticated Founder approval."
+            ],
             refused_actions=refused_actions,
             safety_notes=safety_notes,
-            founder_briefing=briefing,
+            advisory_result=advisory_result,
+            founder_briefing=advisory.founder_briefing,
         )
 
     @staticmethod
