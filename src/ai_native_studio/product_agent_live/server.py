@@ -101,7 +101,7 @@ def _handler(service: LiveProductAgentService) -> type[BaseHTTPRequestHandler]:
             self._send_json(result.http_status, result.model_dump())
 
         def log_message(self, format: str, *args: object) -> None:
-            log_event("http_access", client=self.client_address[0], message=format % args)
+            log_event("http_access", client=self.client_address[0], access_log=format % args)
 
         def _send_json(self, status: int, payload: dict[str, object]) -> None:
             body = json.dumps(payload).encode("utf-8")
