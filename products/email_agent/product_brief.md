@@ -33,7 +33,8 @@ Build a permissioned email agent that helps the user understand and triage Gmail
 
 ## Target User
 
-The Founder, acting as a solo operator who wants leverage without losing control over sensitive communication.
+The Founder and Product Lead, acting as a solo operator who wants leverage without losing control
+over sensitive communication.
 
 ## Success Metrics
 

@@ -1,21 +1,49 @@
 # Feature Lifecycle
 
-## 1. Product Definition
+## 1. Founder Product Direction
 
-Owner: Product-Customer Agent.
+Owner: Founder and Product Lead.
+
+Inputs:
+
+- Product idea or problem.
+- Initial priorities and constraints.
+- Permission and safety boundaries.
+
+## 2. Product Recommendation
+
+Owner: ProductAgent as an adviser.
 
 Outputs:
 
+- Product questions and assumptions.
 - Problem statement.
-- In-scope behavior.
+- Recommended in-scope behavior.
 - Non-goals.
 - User journeys.
-- Acceptance criteria.
+- Draft acceptance criteria.
 - Success metrics.
+- User, privacy, operational, and adoption risks.
 
-## 2. Technical Design
+ProductAgent must distinguish recommendations from approved decisions. It cannot commission
+implementation.
 
-Owner: Builder Agent.
+## 3. Founder Specification Approval
+
+Owner: Founder and Product Lead.
+
+Gate requirements:
+
+- Review ProductAgent recommendations and unresolved questions.
+- Approve, amend, reject, or descope the recommendation.
+- Record the approved specification as a versioned artifact, such as a commit SHA.
+
+No implementation may begin before this approval. Material changes to an approved specification
+require renewed Founder approval.
+
+## 4. Technical Design
+
+Owner: BuilderAgent.
 
 Outputs:
 
@@ -25,20 +53,24 @@ Outputs:
 - Test strategy.
 - Implementation plan.
 
-## 3. Build
+BuilderAgent must design against the approved specification without silently expanding scope or
+weakening acceptance criteria.
 
-Owner: Builder Agent.
+## 5. Build
+
+Owner: BuilderAgent.
 
 Rules:
 
-- Implement against accepted artifacts.
+- Implement against the Founder-approved artifact version.
 - Use mocks before private external integrations.
 - Keep sensitive actions behind explicit approval paths.
 - Add tests with the feature.
+- Do not self-approve, merge, or release the implementation.
 
-## 4. Verify
+## 6. Verify
 
-Owner: Verifier Agent.
+Owner: VerifierAgent in a separate review context.
 
 Outputs:
 
@@ -46,20 +78,24 @@ Outputs:
 - Security review.
 - Privacy review.
 - Evaluation report.
-- Release recommendation.
+- Evidence-backed PASS or FAIL.
+- Release recommendation to the Founder and Product Lead.
 
-## 5. Revise
+VerifierAgent must not silently repair the implementation or redefine the approved requirements.
 
-Owner: Builder Agent for changes, Verifier Agent for re-check.
+## 7. Repair and Re-check
+
+Owner: BuilderAgent for repairs and VerifierAgent for independent re-check.
 
 Rules:
 
-- Up to three Builder-Verifier cycles.
-- Remaining disagreement escalates to Founder.
+- Up to three BuilderAgent-VerifierAgent cycles.
+- Remaining disagreement escalates to the Founder and Product Lead.
+- Material specification changes require renewed Founder approval before repair work continues.
 
-## 6. Founder Decision
+## 8. Founder Release Decision
 
-Owner: Founder.
+Owner: Founder and Product Lead.
 
 Possible decisions:
 
@@ -67,3 +103,6 @@ Possible decisions:
 - Approve with documented risk.
 - Request more work.
 - Reject or descope.
+
+Verification is a recommendation, not release approval. Every task and lifecycle handoff ends with
+the Founder Briefing defined in `company/founder_briefing_template.md`.

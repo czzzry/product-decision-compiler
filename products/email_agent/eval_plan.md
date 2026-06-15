@@ -9,7 +9,7 @@ Evaluation is created before implementation. Shadow mode cannot be released unti
 Create a privacy-scrubbed dataset of email-like fixtures:
 
 - Synthetic messages for common cases.
-- Scrubbed real examples only after explicit Founder approval.
+- Scrubbed real examples only after explicit Founder and Product Lead approval.
 - Stable IDs and labels.
 - Expected classifications, summaries, risk levels, action-required flags, and proposed actions.
 - No credentials, tokens, personal addresses, private names, or sensitive content.
@@ -74,7 +74,8 @@ Shadow mode requires at least 80% rated 2 among eligible draft cases and zero un
 
 ## Regression Tests
 
-Every bug found by Verifier must create or update a fixture before the fix is accepted. Regression suites must include normal, ambiguous, and adversarial cases.
+Every bug found by VerifierAgent must create or update a fixture before the fix is accepted.
+Regression suites must include normal, ambiguous, and adversarial cases.
 
 ## Shadow-Mode Release Gates
 

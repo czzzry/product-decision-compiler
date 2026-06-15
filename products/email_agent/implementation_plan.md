@@ -102,13 +102,13 @@ Deliverables:
 - End-to-end fixture pipeline.
 - Reviewable proposed-action output.
 - Full audit log.
-- Verifier report.
+- VerifierAgent report.
 
 Exit criteria:
 
 - Shadow-mode release gates pass.
-- Verifier recommends Founder review.
-- Founder approves release.
+- VerifierAgent recommends Founder and Product Lead review.
+- Founder and Product Lead approves release.
 
 ## Later Stages
 
@@ -118,4 +118,5 @@ Exit criteria:
 - Approval-based draft creation.
 - Carefully selected reversible automation.
 
-Each later stage requires a new threat-model review, permission-boundary tests, and Founder approval.
+Each later stage requires a new threat-model review, permission-boundary tests, and Founder and
+Product Lead approval.
