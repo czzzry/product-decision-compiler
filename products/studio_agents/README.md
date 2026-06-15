@@ -124,3 +124,64 @@ The exact proposed Phase 2B execution prompt is stored in `phase_2b_prompt.md`.
 
 Client secrets, signing secrets, access tokens, and refresh tokens must never be pasted into chat,
 Linear issues or comments, source files, logs, or Git history.
+
+## Phase 2B Local Readiness
+
+Phase 2B adds a deployment-ready local service for one real private Linear-visible `@ProductAgent`.
+The code lives in `src/ai_native_studio/product_agent_live/` and is still safe to run locally
+because it does not create external resources by itself.
+
+What is now implemented locally:
+
+- A small HTTP service with `GET /healthz`, `GET /oauth/linear/start`,
+  `GET /oauth/linear/callback`, and `POST /webhooks/linear`.
+- OAuth installation URL generation for a single app actor.
+- OAuth code exchange and refresh-token handling.
+- Encrypted local token storage for one installation.
+- Live `AgentSessionEvent` intake with signature, freshness, and deduplication checks.
+- Reuse of the existing founder-led ProductAgent policy before sending a Linear response.
+- Linear GraphQL client methods for ephemeral thought and final response activities.
+- A storage split between local SQLite proofing and a Firestore-backed production adapter for
+  Cloud Run durability.
+
+Current persistence review:
+
+- OAuth access and refresh tokens: encrypted in local SQLite by default; Firestore-backed durable
+  document storage is available for Cloud Run production use.
+- Linear installation metadata and app-user identifier: local SQLite metadata by default;
+  Firestore-backed durable document storage is available for Cloud Run production use.
+- Processed webhook IDs: local SQLite receipt ledger by default; Firestore-backed durable document
+  storage is available for Cloud Run production use.
+- Founder approval records: still synthetic-only in Phase 2A.5, but now also support a Firestore
+  ledger adapter so approval evidence does not need to remain in memory when a live approval
+  channel is introduced.
+
+Why Firestore is required for live Cloud Run:
+
+Cloud Run container files are not durable operational storage. A SQLite file inside a disposable
+instance can disappear on restart, replacement, or scale-to-zero. That would lose installation
+tokens, app-user metadata, deduplication history, and any future approval evidence. Firestore is the
+smallest managed durable store added in this checkpoint to close that gap without adding queues or
+extra services.
+
+What still requires manual Founder setup before any live test:
+
+1. Create one private Linear OAuth app in `Settings -> Administration -> API`.
+2. Set the callback URL to `https://<cloud-run-service>.a.run.app/oauth/linear/callback`.
+3. Enable webhooks and set the webhook URL to
+   `https://<cloud-run-service>.a.run.app/webhooks/linear`.
+4. Enable `Agent session events`.
+5. Install the app only for the `Product Studio` team.
+6. Store the client secret, webhook secret, and token-encryption key in managed secrets rather than
+   in chat, Linear, or Git.
+7. Configure `PRODUCT_AGENT_STORAGE_BACKEND=firestore` for the deployed service.
+
+Recommended minimum scopes for the first private test:
+
+- `read`
+- `comments:create`
+- `app:assignable`
+- `app:mentionable`
+
+The local service is designed to stop safely when installation is missing, a webhook is stale,
+replayed, misrouted, or signed with the wrong secret.

@@ -79,3 +79,35 @@ single local process but is not the recommended production receipt store.
 
 The synthetic approval ledger is also in memory. It proves validation and version binding, not
 durable identity, authorization, or audit storage.
+
+## Phase 2B Extension
+
+The live-preparation path keeps the same policy core and adds only four new edges:
+
+1. Linear OAuth redirect flow for one private app actor.
+2. Encrypted local storage for one installation token set.
+3. Linear GraphQL activity publishing for `thought` and `response`.
+4. A Cloud Run-friendly standard-library HTTP server boundary.
+
+The live service intentionally reuses the Phase 2A and 2A.5 controls instead of creating a separate
+policy path. Signed fresh webhook events are transformed into the same internal ProductAgent event
+shape before evaluation. This keeps Founder authority, injection handling, and implementation
+refusal deterministic in both local and live-adjacent modes.
+
+The token store is deliberately single-installation because this phase is scoped to one private
+`ProductAgent` for one team. Multi-workspace or multi-agent tenancy is out of scope.
+
+## Phase 2B Persistence Boundary
+
+There are now two storage modes:
+
+1. `sqlite`: local proofing mode. Tokens, app-user metadata, OAuth state, and webhook receipts are
+   stored in `data/private/product_agent.live.sqlite3`.
+2. `firestore`: deployment mode. Tokens remain encrypted with the configured token-encryption key,
+   while installation state, app-user metadata, OAuth state, webhook receipts, and approval records
+   are stored in durable Firestore documents.
+
+The local SQLite mode remains useful for local tests and demonstrations. It is not sufficient for a
+real Cloud Run deployment because container-local files can be lost across restart, replacement, or
+scale-to-zero. Firestore was added as the smallest durable operational store that matches this
+phase's one-agent scope.

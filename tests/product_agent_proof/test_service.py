@@ -8,6 +8,8 @@ from copy import deepcopy
 from http.server import ThreadingHTTPServer
 from typing import Any
 
+import pytest
+
 from ai_native_studio.product_agent_proof.adapter import RecordingLinearAdapter
 from ai_native_studio.product_agent_proof.dedup import WebhookReceiptStore
 from ai_native_studio.product_agent_proof.role_config import load_product_agent_role
@@ -222,7 +224,10 @@ def test_local_http_endpoint_processes_a_signed_event() -> None:
     service, adapter = make_service()
     current_ms = int(time.time() * 1000)
     body = encode(make_event(webhook_id="http-event", timestamp_ms=current_ms))
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(service))
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(service))
+    except PermissionError as error:
+        pytest.skip(f"Socket binding is not permitted in this environment: {error}")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     request = urllib.request.Request(

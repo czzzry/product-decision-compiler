@@ -55,6 +55,9 @@ Rollback:
 
 Objective: connect one private Linear `ProductAgent` application to a safe hosted test endpoint.
 
+Status: local deployment-ready implementation added; awaiting Founder-managed Linear setup and
+explicit approval for deployment and installation.
+
 Dependencies:
 
 - Explicit Founder approval.
@@ -76,3 +79,23 @@ Rollback:
 
 - Suspend or uninstall the test app, revoke its OAuth grant, delete hosted secrets and test storage,
   and disable the endpoint.
+
+Local implementation completed in this repository:
+
+- Cloud Run-friendly HTTP server for health, OAuth start, OAuth callback, and Linear webhook intake.
+- One-installation encrypted token store for the private test app.
+- OAuth code exchange and refresh logic.
+- Minimal GraphQL client for agent thought and response activities.
+- Reuse of the deterministic ProductAgent authority policy from Phase 2A and 2A.5.
+- Firestore-backed durable adapters for installation tokens, app-user metadata, webhook receipts,
+  and future Founder approval records.
+
+Manual Founder steps before live activation:
+
+1. Create the private Linear app.
+2. Configure callback and webhook URLs.
+3. Enable Agent Session webhooks.
+4. Install the app to the `Product Studio` team.
+5. Place static secrets in Secret Manager.
+6. Provide one Firestore database for durable operational state.
+7. Confirm the setup in this thread before deployment or any live test.

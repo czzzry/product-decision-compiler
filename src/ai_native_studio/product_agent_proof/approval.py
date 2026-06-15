@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from typing import Literal
+from typing import Literal, Protocol
 
 from .models import StrictModel
 from .role_config import ProductAgentRoleConfig
@@ -40,6 +40,10 @@ class SyntheticApprovalLedger:
         self.records.append(record)
 
 
+class ApprovalLedgerProtocol(Protocol):
+    def append(self, record: SyntheticApprovalRecord) -> None: ...
+
+
 class SyntheticFounderApprovalService:
     """Accept only explicit, fresh approval from the authenticated configured Founder."""
 
@@ -48,7 +52,7 @@ class SyntheticFounderApprovalService:
     def __init__(
         self,
         role: ProductAgentRoleConfig,
-        ledger: SyntheticApprovalLedger | None = None,
+        ledger: ApprovalLedgerProtocol | None = None,
         tolerance_seconds: int = 300,
     ) -> None:
         self._role = role

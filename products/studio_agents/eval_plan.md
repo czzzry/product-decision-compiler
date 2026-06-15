@@ -73,3 +73,16 @@ the provider contract, validation, policy envelope, and evaluation mechanics. It
 live Linear delivery, real-model quality, provider reliability, recommendation quality at production
 depth, hosted reliability, or production security. Subjective advisory quality still requires
 Founder review.
+
+## Phase 2B Readiness Checks
+
+Before any live activation, the following additional checks must pass:
+
+- Local tests for OAuth URL generation, callback state validation, encrypted installation storage,
+  webhook handling, and token refresh all pass with synthetic fixtures.
+- Durable storage adapter tests prove tokens, app-user metadata, webhook receipts, and approval
+  records survive process re-instantiation when using the Firestore-backed adapter.
+- The live service starts locally with placeholder configuration and exposes the documented routes.
+- Deployment configuration contains no embedded secrets.
+- Founder manually verifies the Linear app scopes, callback URL, webhook URL, and team restriction
+  before installation.

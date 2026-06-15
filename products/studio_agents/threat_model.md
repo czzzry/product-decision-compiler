@@ -109,6 +109,14 @@ A real credential is placed in source, output, command history, or fixtures.
 Controls: synthetic secrets only, ignored private paths, final secret-pattern scan, and explicit
 documentation prohibiting real secrets in chat, Linear, logs, or Git.
 
+### Lost Operational State On Cloud Run Restart
+
+An instance restart, replacement, or scale-to-zero event discards container-local files.
+
+Controls: static secrets live in Secret Manager; changing operational state for the live app now has
+an explicit Firestore-backed adapter so installation tokens, app-user identifiers, webhook receipts,
+and future approval evidence do not depend on a local SQLite file inside the container.
+
 ## Residual Risks
 
 - Keyword detection is illustrative, not a complete prompt-injection classifier.
@@ -120,3 +128,18 @@ documentation prohibiting real secrets in chat, Linear, logs, or Git.
 - Command-line secrets may appear in process listings or shell history; the optional server is local
   proof tooling only.
 - No hosted ingress, TLS termination, secret rotation, OAuth, or live Linear behavior is evaluated.
+- The current Firestore adapter keeps the design intentionally small and does not yet add background
+  cleanup for expired OAuth state documents.
+
+## Phase 2B-Specific Risks To Review Before Going Live
+
+- OAuth client secrets, webhook secrets, and refresh tokens become real credentials and must move to
+  managed secret storage before deployment.
+- A public HTTPS endpoint introduces availability and log-retention considerations not present in the
+  local proof.
+- A compromised installation token could post agent activity in Linear until revoked or expired.
+- Clock skew between Cloud Run and Linear could reject otherwise valid events if the tolerance is too
+  strict; the current 60-second window is intentionally documented and test-covered.
+- Team misconfiguration in Linear could expose the app to the wrong workspace or team content.
+- Live comments and issue descriptions may contain private information, so provider use must remain
+  disabled until Founder-approved.
