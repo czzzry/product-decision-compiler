@@ -137,3 +137,7 @@ def main() -> None:
         server.server_close()
         installation_store.close()
         receipt_store.close()
+
+
+if __name__ == "__main__":
+    main()
