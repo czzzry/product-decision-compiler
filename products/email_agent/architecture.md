@@ -112,6 +112,6 @@ Private local databases must live under `data/private/` and remain untracked.
 2. Approval-based labels.
 3. Approval-based archive and mark-read.
 4. Approval-based draft creation.
-5. Carefully selected reversible automation after evidence-based Founder approval.
+5. Carefully selected reversible automation after evidence-based Founder and Product Lead approval.
 
 Autonomous sending, forwarding, and permanent deletion remain out of scope for initial releases.

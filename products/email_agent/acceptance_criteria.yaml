@@ -23,7 +23,7 @@ criteria:
     required: true
   - id: EA-SHADOW-006
     area: approval
-    statement: Sensitive or externally visible actions require explicit Founder approval before any future execution.
+    statement: Sensitive or externally visible actions require explicit Founder and Product Lead approval before any future execution.
     required: true
   - id: EA-SHADOW-007
     area: audit

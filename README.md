@@ -8,12 +8,23 @@ The first pilot product is a permissioned personal email agent for Gmail. This r
 
 The company has four roles:
 
-- Founder: human final decision-maker for scope, sensitive permissions, and releases.
-- Product-Customer Agent: defines the user problem, scope, journeys, non-goals, acceptance criteria, and success metrics.
-- Builder Agent: designs and implements software, tests, and technical documentation.
-- Verifier Agent: independently evaluates Builder output through QA, adversarial testing, security review, privacy review, and release recommendations.
+- Founder and Product Lead: owns product vision, priorities, scope, final acceptance criteria,
+  permission escalation, and release decisions.
+- ProductAgent: advises the Founder, asks product questions, identifies risks and assumptions, and
+  drafts product artifacts. Its recommendations are not approved decisions.
+- BuilderAgent: designs, implements, documents, and tests only Founder-approved specifications.
+- VerifierAgent: independently evaluates BuilderAgent output and returns an evidence-backed PASS or
+  FAIL with a release recommendation.
 
-Agents exchange version-controlled artifacts. They do not rely on simulated meetings or untracked conversations.
+Agents exchange version-controlled artifacts. They do not rely on simulated meetings or untracked
+conversations. No agent may approve its own work.
+
+Founder approval is required before a ProductAgent recommendation becomes an approved
+specification, before BuilderAgent begins implementation, and before a verified change is released.
+Approved specifications are versioned, and material changes require renewed approval.
+
+Every Codex or agent task ends with the plain-English Founder Briefing defined in
+`company/founder_briefing_template.md`.
 
 ## Product Direction
 
