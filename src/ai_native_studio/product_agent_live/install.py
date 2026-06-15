@@ -6,10 +6,16 @@ import secrets
 from urllib.parse import urlencode
 
 from .config import LiveProductAgentConfig
-from .tokens import InstallationStore
+from .storage import InstallationStoreProtocol
 
 
-def begin_installation(config: LiveProductAgentConfig, store: InstallationStore) -> str:
+def begin_installation(config: LiveProductAgentConfig, store: InstallationStoreProtocol) -> str:
+    if (
+        not config.linear_configuration_ready
+        or not config.callback_url
+        or not config.oauth_client_id
+    ):
+        raise RuntimeError("Linear OAuth is not configured yet.")
     state = secrets.token_urlsafe(24)
     store.oauth_states.create(state)
     query = urlencode(

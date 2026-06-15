@@ -25,7 +25,12 @@ from .linear_api import (
     LinearOAuthClient,
 )
 from .logging_utils import log_event
-from .models import LiveAgentSessionEvent, OAuthCallbackResult, WebhookProcessResult
+from .models import (
+    HealthCheckResult,
+    LiveAgentSessionEvent,
+    OAuthCallbackResult,
+    WebhookProcessResult,
+)
 from .storage import InstallationStoreProtocol, ReceiptStoreProtocol
 
 GraphClientFactory = Callable[[str], LinearGraphQLClient]
@@ -52,10 +57,31 @@ class LiveProductAgentService:
         self._role = load_product_agent_role()
         self._policy = ProductAgentPolicy(self._role, model)
 
+    def health_check(self) -> HealthCheckResult:
+        if self._config.linear_configuration_ready:
+            return HealthCheckResult(
+                status="ok",
+                linear_configuration_ready=True,
+                reason="ProductAgent is running and Linear configuration is present.",
+            )
+        return HealthCheckResult(
+            status="ok",
+            linear_configuration_ready=False,
+            reason="ProductAgent is running, but Linear is not configured yet.",
+            missing_configuration=list(self._config.missing_linear_configuration),
+        )
+
     def begin_installation(self) -> str:
+        if not self._config.linear_configuration_ready:
+            raise RuntimeError("Linear OAuth is not configured yet.")
         return begin_installation(self._config, self._installation_store)
 
     def complete_installation(self, code: str, state: str) -> OAuthCallbackResult:
+        if not self._config.linear_configuration_ready:
+            return OAuthCallbackResult(
+                status="not_configured",
+                reason="Linear OAuth is not configured yet.",
+            )
         if not self._installation_store.oauth_states.pop(state, max_age_ms=15 * 60 * 1000):
             return OAuthCallbackResult(
                 status="rejected",
@@ -77,6 +103,12 @@ class LiveProductAgentService:
         *,
         now_ms: int,
     ) -> WebhookProcessResult:
+        if not self._config.webhook_secret:
+            return self._reject(
+                "not_configured",
+                "Linear webhook verification is not configured yet.",
+                503,
+            )
         signature = self._header(headers, "linear-signature")
         try:
             verify_signature(self._config.webhook_secret.encode("utf-8"), raw_body, signature)

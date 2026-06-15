@@ -66,7 +66,7 @@ class StoredInstallation(PermissiveModel):
 
 
 class OAuthCallbackResult(PermissiveModel):
-    status: Literal["installed", "rejected"]
+    status: Literal["installed", "rejected", "not_configured"]
     reason: str
 
 
@@ -75,3 +75,10 @@ class WebhookProcessResult(PermissiveModel):
     http_status: int
     code: str
     reason: str
+
+
+class HealthCheckResult(PermissiveModel):
+    status: Literal["ok"]
+    linear_configuration_ready: bool
+    reason: str
+    missing_configuration: list[str] = Field(default_factory=list)

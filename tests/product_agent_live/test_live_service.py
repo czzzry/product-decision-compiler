@@ -9,6 +9,7 @@ from ai_native_studio.product_agent_live.activity_format import format_response
 from ai_native_studio.product_agent_live.config import LiveProductAgentConfig
 from ai_native_studio.product_agent_live.linear_api import LinearAuthError
 from ai_native_studio.product_agent_live.models import StoredInstallation
+from ai_native_studio.product_agent_live.server import _not_configured_payload
 from ai_native_studio.product_agent_live.service import LiveProductAgentService
 from ai_native_studio.product_agent_live.tokens import InstallationStore
 from ai_native_studio.product_agent_proof.dedup import WebhookReceiptStore
@@ -163,6 +164,58 @@ def test_begin_installation_builds_app_authorize_url(tmp_path: Path) -> None:
     receipt_store.close()
 
 
+def test_unconfigured_health_and_oauth_routes_are_safe(tmp_path: Path) -> None:
+    live_config = LiveProductAgentConfig(
+        app_env="test",
+        log_level="INFO",
+        public_base_url=None,
+        storage_backend="sqlite",
+        oauth_client_id=None,
+        oauth_client_secret=None,
+        webhook_secret=None,
+        token_encryption_key="test-key-123",
+        database_path=tmp_path / "live.sqlite3",
+        firestore_project_id=None,
+        firestore_database_id="(default)",
+        firestore_collection_prefix="product_agent_live",
+        callback_path="/oauth/linear/callback",
+        webhook_path="/webhooks/linear",
+        health_path="/healthz",
+        linear_authorize_url="https://linear.app/oauth/authorize",
+        linear_token_url="https://api.linear.app/oauth/token",
+        linear_graphql_url="https://api.linear.app/graphql",
+        install_scopes=("read", "comments:create"),
+        expected_team_name="Product Studio",
+        external_url_label="Open ProductAgent",
+    )
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    receipt_store = WebhookReceiptStore()
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=lambda access_token: RecordingGraphClient(access_token),
+        model=DeterministicFakeProductModel(),
+    )
+
+    health = service.health_check()
+    callback_result = service.complete_installation("code", "state")
+    route_payload = _not_configured_payload(live_config)
+
+    assert health.status == "ok"
+    assert health.linear_configuration_ready is False
+    assert "PRODUCT_AGENT_PUBLIC_BASE_URL" in health.missing_configuration
+    assert callback_result.status == "not_configured"
+    assert route_payload["status"] == "not_configured"
+    assert "PRODUCT_AGENT_OAUTH_CLIENT_ID" in route_payload["missing_configuration"]
+    installation_store.close()
+    receipt_store.close()
+
+
 def test_complete_installation_stores_encrypted_tokens(tmp_path: Path) -> None:
     service, installation_store, receipt_store, _ = service_fixture(tmp_path)
     installation_store.oauth_states.create("state-1")
@@ -183,6 +236,54 @@ def test_complete_installation_rejects_missing_state(tmp_path: Path) -> None:
     result = service.complete_installation("auth-code", "missing-state")
 
     assert result.status == "rejected"
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_unconfigured_webhook_is_rejected_without_signature_secret(tmp_path: Path) -> None:
+    live_config = LiveProductAgentConfig(
+        app_env="test",
+        log_level="INFO",
+        public_base_url=None,
+        storage_backend="sqlite",
+        oauth_client_id=None,
+        oauth_client_secret=None,
+        webhook_secret=None,
+        token_encryption_key="test-key-123",
+        database_path=tmp_path / "live.sqlite3",
+        firestore_project_id=None,
+        firestore_database_id="(default)",
+        firestore_collection_prefix="product_agent_live",
+        callback_path="/oauth/linear/callback",
+        webhook_path="/webhooks/linear",
+        health_path="/healthz",
+        linear_authorize_url="https://linear.app/oauth/authorize",
+        linear_token_url="https://api.linear.app/oauth/token",
+        linear_graphql_url="https://api.linear.app/graphql",
+        install_scopes=("read", "comments:create"),
+        expected_team_name="Product Studio",
+        external_url_label="Open ProductAgent",
+    )
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    receipt_store = WebhookReceiptStore()
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=lambda access_token: RecordingGraphClient(access_token),
+        model=DeterministicFakeProductModel(),
+    )
+    body = json.dumps(event_payload()).encode("utf-8")
+
+    result = service.handle_webhook(body, {}, now_ms=1_700_000_000_000)
+
+    assert result.status == "rejected"
+    assert result.code == "not_configured"
+    assert result.http_status == 503
     installation_store.close()
     receipt_store.close()
 

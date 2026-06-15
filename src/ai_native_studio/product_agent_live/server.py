@@ -19,6 +19,14 @@ from .storage import (
 )
 
 
+def _not_configured_payload(config) -> dict[str, object]:
+    return {
+        "status": "not_configured",
+        "reason": "Linear OAuth is not configured yet.",
+        "missing_configuration": list(config.missing_linear_configuration),
+    }
+
+
 def _service() -> tuple[LiveProductAgentService, InstallationStoreProtocol, ReceiptStoreProtocol]:
     config = load_live_config()
     config.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -42,14 +50,18 @@ def _handler(service: LiveProductAgentService) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             if parsed.path == config.health_path:
-                return self._send_json(200, {"status": "ok"})
+                return self._send_json(200, service.health_check().model_dump())
             if parsed.path == "/oauth/linear/start":
+                if not config.linear_configuration_ready:
+                    return self._send_json(503, _not_configured_payload(config))
                 install_url = service.begin_installation()
                 self.send_response(302)
                 self.send_header("Location", install_url)
                 self.end_headers()
                 return
             if parsed.path == config.callback_path:
+                if not config.linear_configuration_ready:
+                    return self._send_json(503, _not_configured_payload(config))
                 query = parse_qs(parsed.query)
                 if "error" in query:
                     return self._send_json(
@@ -114,6 +126,8 @@ def main() -> None:
         callback_url=config.callback_url,
         webhook_url=config.webhook_url,
         health_url=config.health_url,
+        linear_configuration_ready=config.linear_configuration_ready,
+        missing_configuration=list(config.missing_linear_configuration),
     )
     try:
         server.serve_forever()
