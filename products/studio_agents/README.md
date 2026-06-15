@@ -133,7 +133,7 @@ because it does not create external resources by itself.
 
 What is now implemented locally:
 
-- A small HTTP service with `GET /healthz`, `GET /oauth/linear/start`,
+- A small HTTP service with `GET /health`, `GET /oauth/linear/start`,
   `GET /oauth/linear/callback`, and `POST /webhooks/linear`.
 - OAuth installation URL generation for a single app actor.
 - OAuth code exchange and refresh-token handling.

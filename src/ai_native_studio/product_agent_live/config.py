@@ -113,7 +113,7 @@ def load_live_config() -> LiveProductAgentConfig:
             "PRODUCT_AGENT_WEBHOOK_PATH",
             "/webhooks/linear",
         ),
-        health_path=os.environ.get("PRODUCT_AGENT_HEALTH_PATH", "/healthz"),
+        health_path=os.environ.get("PRODUCT_AGENT_HEALTH_PATH", "/health"),
         linear_authorize_url=os.environ.get(
             "LINEAR_OAUTH_AUTHORIZE_URL",
             "https://linear.app/oauth/authorize",
