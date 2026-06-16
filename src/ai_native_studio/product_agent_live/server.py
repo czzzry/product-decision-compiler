@@ -21,9 +21,11 @@ from .storage import (
     InstallationStoreProtocol,
     ProductBriefStoreProtocol,
     ReceiptStoreProtocol,
+    RequestProvenanceStoreProtocol,
     build_installation_store,
     build_product_brief_store,
     build_receipt_store,
+    build_request_provenance_store,
 )
 
 
@@ -85,24 +87,27 @@ def _service() -> tuple[
     InstallationStoreProtocol,
     ReceiptStoreProtocol,
     ProductBriefStoreProtocol,
+    RequestProvenanceStoreProtocol,
 ]:
     config = load_live_config()
     config.database_path.parent.mkdir(parents=True, exist_ok=True)
     installation_store = build_installation_store(config)
     receipt_store = build_receipt_store(config)
     product_brief_store = build_product_brief_store(config)
+    request_provenance_store = build_request_provenance_store(config)
     oauth_client = LinearOAuthClient(config)
     service = LiveProductAgentService(
         config,
         receipt_store=receipt_store,
         installation_store=installation_store,
         product_brief_store=product_brief_store,
+        request_provenance_store=request_provenance_store,
         oauth_client=oauth_client,
         graph_client_factory=lambda access_token: LinearGraphQLClient(config, access_token),
         model=_build_model(config),
         brief_model=_build_brief_model(config),
     )
-    return service, installation_store, receipt_store, product_brief_store
+    return service, installation_store, receipt_store, product_brief_store, request_provenance_store
 
 
 def _handler(service: LiveProductAgentService) -> type[BaseHTTPRequestHandler]:
@@ -179,7 +184,13 @@ def _handler(service: LiveProductAgentService) -> type[BaseHTTPRequestHandler]:
 def main() -> None:
     config = load_live_config()
     configure_logging(config.log_level)
-    service, installation_store, receipt_store, product_brief_store = _service()
+    (
+        service,
+        installation_store,
+        receipt_store,
+        product_brief_store,
+        request_provenance_store,
+    ) = _service()
     server = ThreadingHTTPServer(
         ("0.0.0.0", int(__import__("os").environ.get("PORT", "8080"))), _handler(service)
     )
@@ -200,6 +211,7 @@ def main() -> None:
         installation_store.close()
         receipt_store.close()
         product_brief_store.close()
+        request_provenance_store.close()
 
 
 if __name__ == "__main__":

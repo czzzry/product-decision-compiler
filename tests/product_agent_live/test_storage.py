@@ -7,11 +7,13 @@ from ai_native_studio.product_agent_live.product_briefs import (
     CreatorIdentity,
     ProductBriefApprovalRecord,
     ProductBriefVersion,
+    RequestProvenance,
 )
 from ai_native_studio.product_agent_live.storage import (
     FirestoreApprovalLedger,
     FirestoreInstallationStore,
     FirestoreProductBriefStore,
+    FirestoreRequestProvenanceStore,
     FirestoreWebhookReceiptStore,
     InMemoryDocumentStore,
 )
@@ -197,6 +199,17 @@ def test_firestore_product_brief_store_survives_reinstantiation() -> None:
         status="awaiting_founder_approval",
         created_at_ms=1_700_000_000_000,
         creator_identity=CreatorIdentity(type="product_agent_app", id="app-user-1"),
+        source_provenance=RequestProvenance(
+            source_type="comment",
+            source_linear_workspace_id="workspace-1",
+            source_linear_team_id="team-1",
+            source_linear_issue_id="issue-1",
+            source_linear_issue_identifier="PRO-3",
+            source_comment_id="comment-1",
+            source_event_id="webhook-1",
+            exact_triggering_instruction="@ProductAgent Create a versioned Product Brief.",
+            received_at_ms=1_700_000_000_000,
+        ),
     )
     assert first.create_version(brief)
     assert first.create_approval(
@@ -221,3 +234,34 @@ def test_firestore_product_brief_store_survives_reinstantiation() -> None:
     assert second.get_version("brief-pro-3-v1").title == "Email Agent Product Brief"
     assert second.get_approval("approval-1") is not None
     assert second.get_approval("approval-1").founder_linear_user_id == "founder-1"
+
+
+def test_firestore_request_provenance_store_survives_reinstantiation() -> None:
+    backend: dict[tuple[str, str], dict[str, object]] = {}
+    first = FirestoreRequestProvenanceStore(
+        InMemoryDocumentStore(backend),
+        collection_prefix="product_agent_live",
+    )
+    provenance = RequestProvenance(
+        source_type="comment",
+        source_linear_workspace_id="workspace-1",
+        source_linear_team_id="team-1",
+        source_linear_issue_id="issue-1",
+        source_linear_issue_identifier="PRO-3",
+        source_comment_id="comment-1",
+        source_event_id="webhook-1",
+        exact_triggering_instruction="@ProductAgent please help",
+        received_at_ms=1_700_000_000_000,
+    )
+    assert first.create("hook-1:1700000000000", provenance)
+    first.close()
+
+    second = FirestoreRequestProvenanceStore(
+        InMemoryDocumentStore(backend),
+        collection_prefix="product_agent_live",
+    )
+
+    stored = second.get("hook-1:1700000000000")
+    assert stored is not None
+    assert stored.source_linear_issue_identifier == "PRO-3"
+    assert stored.exact_triggering_instruction == "@ProductAgent please help"

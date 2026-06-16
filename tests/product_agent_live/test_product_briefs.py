@@ -13,6 +13,7 @@ from ai_native_studio.product_agent_live.product_briefs import (
     ProductBriefDraft,
     ProductBriefIntelligence,
     ProductBriefService,
+    RequestProvenance,
     canonical_content_hash,
 )
 from ai_native_studio.product_agent_live.service import LiveProductAgentService
@@ -97,6 +98,20 @@ def _context(created_at_ms: int = 1_700_000_000_000) -> ProductBriefContext:
         source_linear_issue_identifier="PRO-3",
         creator_id="app-user-1",
         created_at_ms=created_at_ms,
+        request_provenance=RequestProvenance(
+            source_type="comment",
+            source_linear_workspace_id="workspace-1",
+            source_linear_team_id="team-1",
+            source_linear_issue_id="issue-1",
+            source_linear_issue_identifier="PRO-3",
+            source_comment_id="comment-1",
+            source_event_id="webhook-1",
+            exact_triggering_instruction=(
+                "@ProductAgent Create a versioned Product Brief from the current "
+                "Email Agent discussion."
+            ),
+            received_at_ms=created_at_ms,
+        ),
     )
 
 
@@ -138,6 +153,11 @@ def test_successful_brief_creation_uses_deterministic_version_id() -> None:
     assert result.brief.version_id == "brief-pro-3-v1"
     assert result.brief.status == "awaiting_founder_approval"
     assert len(result.brief.content_hash) == 64
+    assert result.brief.source_provenance.source_comment_id == "comment-1"
+    assert (
+        result.brief.source_provenance.exact_triggering_instruction
+        == _context().request_provenance.exact_triggering_instruction
+    )
 
 
 def test_identical_content_reuses_existing_version() -> None:
@@ -424,6 +444,34 @@ def test_approval_parsing_requires_no_model_call(tmp_path: Path) -> None:
     assert result.status == "accepted"
     assert "Founder approval recorded" in clients[0].activities[-1][1]["body"]
     assert product_brief_store.get_version(created.brief.version_id).status == "approved"
+
+
+def test_provenance_is_excluded_from_specification_content_hash() -> None:
+    first = _context()
+    second = ProductBriefContext(
+        **{
+            **first.__dict__,
+            "request_provenance": first.request_provenance.model_copy(
+                update={
+                    "source_comment_id": "comment-2",
+                    "source_event_id": "webhook-2",
+                    "exact_triggering_instruction": "Different provenance only.",
+                    "received_at_ms": 1_700_000_000_123,
+                }
+            ),
+        }
+    )
+    model = StaticBriefModel(_draft("One durable brief."), _draft("One durable brief."))
+    service = ProductBriefService(
+        store=InMemoryProductBriefStore(InMemoryDocumentStore()),
+        intelligence=ProductBriefIntelligence(model),
+    )
+
+    first_result = service.create_or_reuse(first, "synthetic context")
+    second_result = service.create_or_reuse(second, "synthetic context")
+
+    assert first_result.brief.content_hash == second_result.brief.content_hash
+    assert second_result.status == "reused"
 
 
 def _approval_result(

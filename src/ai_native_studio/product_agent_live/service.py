@@ -43,6 +43,7 @@ from .product_briefs import (
     ProductBriefContext,
     ProductBriefIntelligence,
     ProductBriefService,
+    RequestProvenance,
     format_approval_response,
     format_product_brief_response,
     parse_approval_command,
@@ -50,9 +51,11 @@ from .product_briefs import (
 )
 from .storage import (
     InMemoryProductBriefStore,
+    InMemoryRequestProvenanceStore,
     InstallationStoreProtocol,
     ProductBriefStoreProtocol,
     ReceiptStoreProtocol,
+    RequestProvenanceStoreProtocol,
 )
 
 GraphClientFactory = Callable[[str], LinearGraphQLClient]
@@ -67,6 +70,7 @@ class LiveProductAgentService:
         receipt_store: ReceiptStoreProtocol,
         installation_store: InstallationStoreProtocol,
         product_brief_store: ProductBriefStoreProtocol | None = None,
+        request_provenance_store: RequestProvenanceStoreProtocol | None = None,
         oauth_client: LinearOAuthClient,
         graph_client_factory: GraphClientFactory,
         model: ProductAdvisoryModel | None = None,
@@ -77,6 +81,9 @@ class LiveProductAgentService:
         self._receipt_store = receipt_store
         self._installation_store = installation_store
         self._product_brief_store = product_brief_store or InMemoryProductBriefStore()
+        self._request_provenance_store = (
+            request_provenance_store or InMemoryRequestProvenanceStore()
+        )
         self._oauth_client = oauth_client
         self._graph_client_factory = graph_client_factory
         self._timestamp_tolerance_seconds = timestamp_tolerance_seconds
@@ -289,6 +296,8 @@ class LiveProductAgentService:
     ) -> None:
         client = self._graph_client_factory(installation.access_token)
         try:
+            provenance = self._request_provenance(event, client)
+            self._request_provenance_store.create(self._invocation_id(event), provenance)
             client.create_agent_activity(
                 event.agent_session.id,
                 {
@@ -297,11 +306,13 @@ class LiveProductAgentService:
                 },
                 ephemeral=True,
             )
-            self._publish_session_response(client, event)
+            self._publish_session_response(client, event, provenance)
         except LinearAuthError:
             refreshed = self._oauth_client.refresh(installation.refresh_token)
             self._installation_store.save_installation(refreshed)
             retry_client = self._graph_client_factory(refreshed.access_token)
+            provenance = self._request_provenance(event, retry_client)
+            self._request_provenance_store.create(self._invocation_id(event), provenance)
             retry_client.create_agent_activity(
                 event.agent_session.id,
                 {
@@ -310,12 +321,13 @@ class LiveProductAgentService:
                 },
                 ephemeral=True,
             )
-            self._publish_session_response(retry_client, event)
+            self._publish_session_response(retry_client, event, provenance)
 
     def _publish_session_response(
         self,
         client: LinearGraphQLClient,
         event: LiveAgentSessionEvent,
+        provenance: RequestProvenance,
     ) -> None:
         command_text = self._comment_text(event)
         if parse_approval_command(command_text) is not None:
@@ -331,14 +343,14 @@ class LiveProductAgentService:
             )
             client.create_agent_activity(
                 event.agent_session.id,
-                {"type": "response", "body": format_approval_response(result)},
+                {"type": "response", "body": format_approval_response(result, provenance)},
             )
             return
         if requests_product_brief(command_text):
             started_at = time.monotonic()
             try:
                 result = self._product_briefs.create_or_reuse(
-                    self._brief_context(event, client),
+                    self._brief_context(event, client, provenance),
                     self._collect_live_context(event),
                 )
             except IntelligenceError as error:
@@ -389,7 +401,7 @@ class LiveProductAgentService:
         )
         client.create_agent_activity(
             event.agent_session.id,
-            {"type": "response", "body": format_response(response)},
+            {"type": "response", "body": format_response(response, provenance)},
         )
 
     @staticmethod
@@ -501,6 +513,7 @@ class LiveProductAgentService:
         self,
         event: LiveAgentSessionEvent,
         client: LinearGraphQLClient,
+        provenance: RequestProvenance,
     ) -> ProductBriefContext:
         workspace_id = self._extract_issue_metadata_value(
             event.agent_session.issue,
@@ -530,6 +543,7 @@ class LiveProductAgentService:
             source_linear_issue_identifier=event.agent_session.issue.identifier,
             creator_id=event.app_user_id,
             created_at_ms=event.webhook_timestamp,
+            request_provenance=provenance,
         )
 
     @staticmethod
@@ -573,7 +587,7 @@ class LiveProductAgentService:
             return session.comment.body.strip()
         if event.action == "prompted" and event.agent_activity is not None:
             return event.agent_activity.body.strip()
-        return ""
+        return session.issue.description.strip()
 
     @staticmethod
     def _collect_live_context(event: LiveAgentSessionEvent) -> str:
@@ -602,6 +616,61 @@ class LiveProductAgentService:
             prefix
             + "ProductAgent is reviewing the request against the founder-led role contract."
         )
+
+    def _request_provenance(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+    ) -> RequestProvenance:
+        workspace_id = self._extract_issue_metadata_value(
+            event.agent_session.issue,
+            "organizationId",
+        )
+        workspace_id = workspace_id or self._extract_issue_metadata_value(
+            event.agent_session.issue,
+            ("organization", "id"),
+        )
+        team_id = self._extract_issue_metadata_value(event.agent_session.issue, "teamId")
+        team_id = team_id or self._extract_issue_metadata_value(
+            event.agent_session.issue,
+            ("team", "id"),
+        )
+        if not workspace_id or not team_id:
+            metadata = client.fetch_issue_metadata(event.agent_session.issue.id)
+            workspace_id = workspace_id or metadata.get("workspace_id")
+            team_id = team_id or metadata.get("team_id")
+        if not workspace_id or not team_id:
+            raise LinearAPIError(
+                "ProductAgent could not determine the Linear workspace and team IDs for this issue."
+            )
+        comment = event.agent_session.comment
+        instruction = self._comment_text(event)
+        return RequestProvenance(
+            source_type="comment" if comment and comment.body.strip() else "issue_description",
+            source_linear_workspace_id=workspace_id,
+            source_linear_team_id=team_id,
+            source_linear_issue_id=event.agent_session.issue.id,
+            source_linear_issue_identifier=event.agent_session.issue.identifier,
+            source_comment_id=comment.id if comment and comment.body.strip() else None,
+            source_event_id=self._source_event_id(event),
+            exact_triggering_instruction=instruction,
+            received_at_ms=event.webhook_timestamp,
+        )
+
+    @staticmethod
+    def _source_event_id(event: LiveAgentSessionEvent) -> str:
+        if event.agent_activity is not None:
+            activity_id = LiveProductAgentService._extract_metadata_value(
+                event.agent_activity,
+                "id",
+            )
+            if activity_id:
+                return activity_id
+        return event.webhook_id
+
+    @staticmethod
+    def _invocation_id(event: LiveAgentSessionEvent) -> str:
+        return f"{event.webhook_id}:{event.webhook_timestamp}"
 
     @staticmethod
     def _reject(code: str, reason: str, http_status: int) -> WebhookProcessResult:

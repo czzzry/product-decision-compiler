@@ -15,6 +15,7 @@ from .product_briefs import (
     ProductBriefApprovalRecord,
     ProductBriefStoreProtocol,
     ProductBriefVersion,
+    RequestProvenance,
 )
 from .tokens import InstallationStore, _normalize_fernet_key
 
@@ -73,6 +74,14 @@ class DocumentStoreProtocol(Protocol):
     def delete_document(self, collection: str, document_id: str) -> None: ...
 
     def list_documents(self, collection: str) -> list[dict[str, Any]]: ...
+
+    def close(self) -> None: ...
+
+
+class RequestProvenanceStoreProtocol(Protocol):
+    def create(self, invocation_id: str, provenance: RequestProvenance) -> bool: ...
+
+    def get(self, invocation_id: str) -> RequestProvenance | None: ...
 
     def close(self) -> None: ...
 
@@ -427,6 +436,41 @@ class FirestoreProductBriefStore(InMemoryProductBriefStore):
         super().__init__(document_store, collection_prefix=collection_prefix)
 
 
+class InMemoryRequestProvenanceStore:
+    def __init__(
+        self,
+        document_store: DocumentStoreProtocol | None = None,
+        *,
+        collection_prefix: str = "product_agent_live",
+    ) -> None:
+        self._document_store = document_store or InMemoryDocumentStore()
+        self._collection = f"{collection_prefix}_request_provenance"
+
+    def create(self, invocation_id: str, provenance: RequestProvenance) -> bool:
+        return self._document_store.create_document(
+            self._collection,
+            invocation_id,
+            provenance.model_dump(),
+        )
+
+    def get(self, invocation_id: str) -> RequestProvenance | None:
+        payload = self._document_store.get_document(self._collection, invocation_id)
+        return None if payload is None else RequestProvenance.model_validate(payload)
+
+    def close(self) -> None:
+        self._document_store.close()
+
+
+class FirestoreRequestProvenanceStore(InMemoryRequestProvenanceStore):
+    def __init__(
+        self,
+        document_store: DocumentStoreProtocol,
+        *,
+        collection_prefix: str,
+    ) -> None:
+        super().__init__(document_store, collection_prefix=collection_prefix)
+
+
 def build_installation_store(config: LiveProductAgentConfig) -> InstallationStoreProtocol:
     if config.storage_backend == "firestore":
         return FirestoreInstallationStore(
@@ -462,3 +506,17 @@ def build_product_brief_store(config: LiveProductAgentConfig) -> ProductBriefSto
             collection_prefix=config.firestore_collection_prefix,
         )
     return InMemoryProductBriefStore(collection_prefix=config.firestore_collection_prefix)
+
+
+def build_request_provenance_store(
+    config: LiveProductAgentConfig,
+) -> RequestProvenanceStoreProtocol:
+    if config.storage_backend == "firestore":
+        return FirestoreRequestProvenanceStore(
+            FirestoreDocumentStore(
+                project_id=config.firestore_project_id,
+                database_id=config.firestore_database_id,
+            ),
+            collection_prefix=config.firestore_collection_prefix,
+        )
+    return InMemoryRequestProvenanceStore(collection_prefix=config.firestore_collection_prefix)

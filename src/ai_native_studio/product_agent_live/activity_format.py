@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+from ai_native_studio.product_agent_live.product_briefs import RequestProvenance
 from ai_native_studio.product_agent_proof.models import ProductAgentResponse
 
 
-def format_response(response: ProductAgentResponse) -> str:
+def format_response(response: ProductAgentResponse, provenance: RequestProvenance) -> str:
+    request_block = [
+        "Request received",
+        _visible_request_text(provenance),
+        "",
+    ]
     lines = [
+        *request_block,
         "ProductAgent reviewed this request as advisory product work.",
         "",
         "**Clarifying questions**",
@@ -44,3 +51,15 @@ def format_response(response: ProductAgentResponse) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _visible_request_text(provenance: RequestProvenance, max_chars: int = 280) -> str:
+    instruction = provenance.exact_triggering_instruction.strip()
+    if provenance.source_type == "comment" or len(instruction) <= max_chars:
+        return f"> {instruction}"
+    excerpt = instruction[: max_chars - 1].rstrip() + "..."
+    return (
+        f"> {excerpt}\n"
+        f"> Source issue: {provenance.source_linear_issue_identifier} "
+        "(full triggering text retained in application storage)"
+    )

@@ -46,6 +46,18 @@ class CreatorIdentity(StrictModel):
     id: str
 
 
+class RequestProvenance(StrictModel):
+    source_type: Literal["issue_description", "comment"]
+    source_linear_workspace_id: str
+    source_linear_team_id: str
+    source_linear_issue_id: str
+    source_linear_issue_identifier: str
+    source_comment_id: str | None = None
+    source_event_id: str
+    exact_triggering_instruction: str
+    received_at_ms: int
+
+
 class ProductBriefVersion(StrictModel):
     brief_id: str
     version: int
@@ -68,6 +80,7 @@ class ProductBriefVersion(StrictModel):
     status: Literal["draft", "awaiting_founder_approval", "approved", "superseded"]
     created_at_ms: int
     creator_identity: CreatorIdentity
+    source_provenance: RequestProvenance
     supersedes_version_id: str | None = None
 
 
@@ -416,6 +429,7 @@ class ProductBriefContext:
     source_linear_issue_identifier: str
     creator_id: str
     created_at_ms: int
+    request_provenance: RequestProvenance
 
 
 class ProductBriefService:
@@ -468,6 +482,7 @@ class ProductBriefService:
             status=status,
             created_at_ms=context.created_at_ms,
             creator_identity=CreatorIdentity(type="product_agent_app", id=context.creator_id),
+            source_provenance=context.request_provenance,
             supersedes_version_id=latest.version_id if latest is not None else None,
         )
         if latest is not None and latest.status in {"draft", "awaiting_founder_approval"}:
@@ -653,9 +668,19 @@ def format_product_brief_response(result: ProductBriefResult) -> str:
         if brief.status == "awaiting_founder_approval"
         else "This draft is not approved and still needs clarification before approval."
     )
+    created_from = (
+        f"{brief.source_provenance.source_linear_issue_identifier} / comment "
+        f"{brief.source_provenance.source_comment_id}"
+        if brief.source_provenance.source_comment_id
+        else f"{brief.source_provenance.source_linear_issue_identifier} / issue description"
+    )
     lines = [
+        "Request received",
+        _visible_request_text(brief.source_provenance),
+        "",
         "ProductAgent created a versioned Product Brief.",
         "",
+        f"Created from: {created_from}",
         f"Version: `{brief.version_id}`",
         f"Content hash: `{brief.content_hash[:12]}`",
         f"Status: `{brief.status}`",
@@ -692,21 +717,33 @@ def format_product_brief_response(result: ProductBriefResult) -> str:
     return "\n".join(lines)
 
 
-def format_approval_response(result: ProductBriefApprovalResult) -> str:
+def format_approval_response(
+    result: ProductBriefApprovalResult,
+    provenance: RequestProvenance,
+) -> str:
+    provenance_block = (
+        "Request received\n"
+        f"{_visible_request_text(provenance)}\n\n"
+    )
     if result.status == "accepted":
         return (
-            "Founder approval recorded for the exact Product Brief version.\n\n"
+            provenance_block
+            + "Founder approval recorded for the exact Product Brief version.\n\n"
             f"Version: `{result.brief.version_id}`\n"
             f"Content hash: `{result.brief.content_hash[:12]}`\n"
             "No implementation has begun."
         )
     if result.status == "duplicate":
         return (
-            "This exact Founder approval comment was already processed.\n\n"
+            provenance_block
+            + "This exact Founder approval comment was already processed.\n\n"
             f"Version: `{result.brief.version_id}`\n"
             "No implementation has begun."
         )
-    return f"Approval was rejected.\n\nReason: {result.reason}\n\nNo implementation has begun."
+    return (
+        provenance_block
+        + f"Approval was rejected.\n\nReason: {result.reason}\n\nNo implementation has begun."
+    )
 
 
 def _normalize_text(value: str) -> str:
@@ -800,3 +837,15 @@ def _extract_after_marker(text: str, marker: str) -> str | None:
     remainder = text[start:]
     line = remainder.splitlines()[0].strip()
     return _normalize_text(line) if line else None
+
+
+def _visible_request_text(provenance: RequestProvenance, max_chars: int = 280) -> str:
+    instruction = provenance.exact_triggering_instruction.strip()
+    if provenance.source_type == "comment" or len(instruction) <= max_chars:
+        return f"> {instruction}"
+    excerpt = instruction[: max_chars - 1].rstrip() + "..."
+    return (
+        f"> {excerpt}\n"
+        f"> Source issue: {provenance.source_linear_issue_identifier} "
+        "(full triggering text retained in application storage)"
+    )

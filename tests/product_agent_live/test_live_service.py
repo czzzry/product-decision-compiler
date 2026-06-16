@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from ai_native_studio.product_agent_live.activity_format import format_response
-from ai_native_studio.product_agent_live.config import LiveProductAgentConfig
+from ai_native_studio.product_agent_live.config import LiveProductAgentConfig, load_live_config
 from ai_native_studio.product_agent_live.linear_api import LinearAPIError, LinearAuthError
 from ai_native_studio.product_agent_live.logging_utils import redact_mapping
 from ai_native_studio.product_agent_live.models import StoredInstallation
@@ -16,6 +16,7 @@ from ai_native_studio.product_agent_live.service import LiveProductAgentService
 from ai_native_studio.product_agent_live.storage import (
     FirestoreWebhookReceiptStore,
     InMemoryDocumentStore,
+    InMemoryRequestProvenanceStore,
 )
 from ai_native_studio.product_agent_live.tokens import InstallationStore
 from ai_native_studio.product_agent_proof.dedup import WebhookReceiptStore
@@ -195,6 +196,8 @@ def event_payload() -> dict[str, object]:
                 "identifier": "PST-1",
                 "title": "Evaluate a synthetic customer feedback workflow",
                 "description": "Please advise on scope and success criteria.",
+                "teamId": "team-1",
+                "organizationId": "workspace-1",
             },
             "comment": {"id": "comment-1", "body": "@ProductAgent please help"},
             "promptContext": "Synthetic prompt context",
@@ -218,6 +221,8 @@ def second_retry_event_payload() -> dict[str, object]:
                 "identifier": "PRO-1",
                 "title": "Synthetic live retry regression",
                 "description": "Retry the exact agent session after a previously failed publish.",
+                "teamId": "team-1",
+                "organizationId": "workspace-1",
             },
             "comment": {"id": "comment-pro-1", "body": "@ProductAgent please retry"},
             "promptContext": "Synthetic prompt context for the retried live agent session.",
@@ -410,6 +415,18 @@ def test_health_reports_missing_openai_provider_configuration(tmp_path: Path) ->
     receipt_store.close()
 
 
+def test_founder_id_loads_from_runtime_configuration(monkeypatch) -> None:
+    monkeypatch.setenv("PRODUCT_AGENT_TOKEN_ENCRYPTION_KEY", "test-key-123")
+    monkeypatch.setenv(
+        "PRODUCT_AGENT_FOUNDER_LINEAR_USER_ID",
+        "e4f2b296-ad04-4259-88fb-ce4db8b7340e",
+    )
+
+    config = load_live_config()
+
+    assert config.founder_linear_user_id == "e4f2b296-ad04-4259-88fb-ce4db8b7340e"
+
+
 def test_unconfigured_webhook_is_rejected_without_signature_secret(tmp_path: Path) -> None:
     live_config = LiveProductAgentConfig(
         app_env="test",
@@ -487,6 +504,9 @@ def test_webhook_emits_thought_and_response(tmp_path: Path) -> None:
     assert clients
     assert clients[0].activities[0][1]["type"] == "thought"
     assert clients[0].activities[1][1]["type"] == "response"
+    assert clients[0].activities[1][1]["body"].startswith(
+        "Request received\n> @ProductAgent please help"
+    )
     installation_store.close()
     receipt_store.close()
 
@@ -517,8 +537,97 @@ def test_webhook_creates_versioned_product_brief_on_explicit_request(tmp_path: P
 
     assert result.status == "accepted"
     assert clients
+    assert clients[0].activities[1][1]["body"].startswith(
+        "Request received\n> @ProductAgent Create a versioned Product Brief"
+    )
     assert "created a versioned Product Brief" in clients[0].activities[1][1]["body"]
+    assert "Created from: PST-1 / comment comment-1" in clients[0].activities[1][1]["body"]
     assert "APPROVE SPEC brief-pst-1-v1" in clients[0].activities[1][1]["body"]
+
+
+def test_issue_description_provenance_uses_bounded_excerpt(tmp_path: Path) -> None:
+    service, installation_store, receipt_store, clients = service_fixture(tmp_path)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    payload = event_payload()
+    payload["agentSession"]["issue"]["description"] = (
+        "Founders need help reviewing a large inbox and validating a trust-first recommendation "
+        "workflow before implementation. " * 8
+    )
+    payload["agentSession"]["comment"] = None
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_000,
+    )
+
+    assert result.status == "accepted"
+    assert clients
+    response_body = clients[0].activities[1][1]["body"]
+    assert response_body.startswith("Request received\n>")
+    assert "Source issue: PST-1" in response_body
+    assert "full triggering text retained in application storage" in response_body
+
+
+def test_exact_triggering_instruction_is_stored_but_not_logged(tmp_path: Path, caplog) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    receipt_store = WebhookReceiptStore()
+    provenance_store = InMemoryRequestProvenanceStore(InMemoryDocumentStore())
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        request_provenance_store=provenance_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=DeterministicFakeProductModel(),
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    payload = event_payload()
+    payload["agentSession"]["issue"]["teamId"] = "team-1"
+    payload["agentSession"]["issue"]["organizationId"] = "workspace-1"
+    payload["agentSession"]["comment"]["body"] = (
+        "@ProductAgent Create a versioned Product Brief from the current Email Agent discussion."
+    )
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_000,
+    )
+
+    assert result.status == "accepted"
+    stored = provenance_store.get("hook-1:1700000000000")
+    assert stored is not None
+    assert stored.exact_triggering_instruction == payload["agentSession"]["comment"]["body"]
+    assert payload["agentSession"]["comment"]["body"] not in caplog.text
 
 
 def test_webhook_publishes_safe_response_when_provider_fails(tmp_path: Path, caplog) -> None:
@@ -889,7 +998,22 @@ def test_markdown_formatter_includes_founder_briefing() -> None:
         )
     )
 
-    markdown = format_response(response)
+    from ai_native_studio.product_agent_live.product_briefs import RequestProvenance
+
+    markdown = format_response(
+        response,
+        RequestProvenance(
+            source_type="comment",
+            source_linear_workspace_id="workspace-1",
+            source_linear_team_id="team-1",
+            source_linear_issue_id="issue-1",
+            source_linear_issue_identifier="PST-1",
+            source_comment_id="comment-1",
+            source_event_id="webhook-1",
+            exact_triggering_instruction="Please help",
+            received_at_ms=1,
+        ),
+    )
 
     assert "**Founder Briefing**" in markdown
     assert "Approved decisions" in markdown
