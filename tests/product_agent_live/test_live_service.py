@@ -32,7 +32,7 @@ class StubOAuthClient:
             access_token="access-1",
             refresh_token="refresh-1",
             expires_at_ms=9_999_999_999,
-            scope=("read", "comments:create", "app:assignable", "app:mentionable"),
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
         )
 
     def refresh(self, refresh_token: str) -> StoredInstallation:
@@ -40,6 +40,17 @@ class StubOAuthClient:
         return StoredInstallation(
             access_token="access-2",
             refresh_token="refresh-2",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+
+
+class MissingWriteScopeOAuthClient(StubOAuthClient):
+    def exchange_code(self, code: str) -> StoredInstallation:
+        assert code == "auth-code"
+        return StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
             expires_at_ms=9_999_999_999,
             scope=("read", "comments:create", "app:assignable", "app:mentionable"),
         )
@@ -98,7 +109,7 @@ def config(tmp_path: Path) -> LiveProductAgentConfig:
         linear_authorize_url="https://linear.app/oauth/authorize",
         linear_token_url="https://api.linear.app/oauth/token",
         linear_graphql_url="https://api.linear.app/graphql",
-        install_scopes=("read", "comments:create", "app:assignable", "app:mentionable"),
+        install_scopes=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
         expected_team_name="Product Studio",
         external_url_label="Open ProductAgent",
     )
@@ -158,6 +169,7 @@ def test_begin_installation_builds_app_authorize_url(tmp_path: Path) -> None:
     url = service.begin_installation()
 
     assert "actor=app" in url
+    assert "write" in url
     assert "app%3Aassignable" in url or "app:assignable" in url
     assert "app%3Amentionable" in url or "app:mentionable" in url
     installation_store.close()
@@ -240,6 +252,50 @@ def test_complete_installation_rejects_missing_state(tmp_path: Path) -> None:
     receipt_store.close()
 
 
+def test_complete_installation_rejects_install_without_write_scope(tmp_path: Path) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    receipt_store = WebhookReceiptStore()
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=MissingWriteScopeOAuthClient(),
+        graph_client_factory=lambda access_token: RecordingGraphClient(access_token),
+        model=DeterministicFakeProductModel(),
+    )
+    installation_store.oauth_states.create("state-1")
+
+    result = service.complete_installation("auth-code", "state-1")
+
+    assert result.status == "rejected"
+    assert installation_store.load_installation() is None
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_health_requires_write_scope_after_installation(tmp_path: Path) -> None:
+    service, installation_store, receipt_store, _ = service_fixture(tmp_path)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+
+    health = service.health_check()
+
+    assert health.linear_configuration_ready is False
+    assert health.missing_configuration == ["linear_installation_requires_reauthorization"]
+    installation_store.close()
+    receipt_store.close()
+
+
 def test_unconfigured_webhook_is_rejected_without_signature_secret(tmp_path: Path) -> None:
     live_config = LiveProductAgentConfig(
         app_env="test",
@@ -295,7 +351,7 @@ def test_webhook_emits_thought_and_response(tmp_path: Path) -> None:
             access_token="access-1",
             refresh_token="refresh-1",
             expires_at_ms=9_999_999_999,
-            scope=("read", "comments:create"),
+            scope=("read", "write", "comments:create"),
         )
     )
     payload = event_payload()
@@ -311,6 +367,39 @@ def test_webhook_emits_thought_and_response(tmp_path: Path) -> None:
     assert clients
     assert clients[0].activities[0][1]["type"] == "thought"
     assert clients[0].activities[1][1]["type"] == "response"
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_webhook_rejects_installation_missing_write_scope_before_activity_publish(
+    tmp_path: Path,
+) -> None:
+    service, installation_store, receipt_store, clients = service_fixture(tmp_path)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+    body = json.dumps(event_payload()).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_000,
+    )
+
+    assert result.status == "rejected"
+    assert result.code == "installation_scope_incomplete"
+    assert clients == []
+    duplicate = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_001,
+    )
+    assert duplicate.code == "duplicate_event"
     installation_store.close()
     receipt_store.close()
 
@@ -341,7 +430,7 @@ def test_webhook_refreshes_token_after_auth_failure(tmp_path: Path) -> None:
             access_token="access-1",
             refresh_token="refresh-1",
             expires_at_ms=9_999_999_999,
-            scope=("read", "comments:create"),
+            scope=("read", "write", "comments:create"),
         )
     )
     body = json.dumps(event_payload()).encode("utf-8")
