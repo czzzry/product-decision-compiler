@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from collections.abc import Callable, Mapping
 
 from ai_native_studio.product_agent_proof.dedup import ReceiptResult
-from ai_native_studio.product_agent_proof.intelligence import ProductAdvisoryModel
+from ai_native_studio.product_agent_proof.intelligence import (
+    IntelligenceError,
+    ProductAdvisoryModel,
+)
 from ai_native_studio.product_agent_proof.policy import ProductAgentPolicy
+from ai_native_studio.product_agent_proof.providers import ProviderRuntimeError
 from ai_native_studio.product_agent_proof.role_config import load_product_agent_role
 from ai_native_studio.product_agent_proof.security import (
     WebhookSecurityError,
@@ -56,14 +61,32 @@ class LiveProductAgentService:
         self._graph_client_factory = graph_client_factory
         self._timestamp_tolerance_seconds = timestamp_tolerance_seconds
         self._role = load_product_agent_role()
+        self._model = model
         self._policy = ProductAgentPolicy(self._role, model)
+        self._model_provider = getattr(model, "provider_name", config.configured_model_provider)
+        self._model_name = getattr(model, "model_name", config.configured_model_name)
 
     def health_check(self) -> HealthCheckResult:
-        if self._config.linear_configuration_ready and self._installation_has_required_scope():
+        if (
+            self._config.linear_configuration_ready
+            and self._installation_has_required_scope()
+            and self._config.model_configuration_ready
+        ):
             return HealthCheckResult(
                 status="ok",
                 linear_configuration_ready=True,
                 reason="ProductAgent is running and Linear configuration is present.",
+                configured_model_provider=self._model_provider,
+                configured_model_name=self._model_name,
+            )
+        if self._config.linear_configuration_ready and not self._config.model_configuration_ready:
+            return HealthCheckResult(
+                status="ok",
+                linear_configuration_ready=False,
+                reason="ProductAgent is missing required model-provider configuration.",
+                missing_configuration=list(self._config.missing_model_configuration),
+                configured_model_provider=self._config.configured_model_provider,
+                configured_model_name=self._config.configured_model_name,
             )
         if self._config.linear_configuration_ready:
             return HealthCheckResult(
@@ -74,12 +97,16 @@ class LiveProductAgentService:
                     "installation token is missing the required write scope."
                 ),
                 missing_configuration=["linear_installation_requires_reauthorization"],
+                configured_model_provider=self._model_provider,
+                configured_model_name=self._model_name,
             )
         return HealthCheckResult(
             status="ok",
             linear_configuration_ready=False,
             reason="ProductAgent is running, but Linear is not configured yet.",
             missing_configuration=list(self._config.missing_linear_configuration),
+            configured_model_provider=self._config.configured_model_provider,
+            configured_model_name=self._config.configured_model_name,
         )
 
     def begin_installation(self) -> str:
@@ -241,7 +268,33 @@ class LiveProductAgentService:
                 ephemeral=True,
             )
             synthetic_event = self._synthetic_event(event)
-            response = self._policy.evaluate(synthetic_event)
+            started_at = time.monotonic()
+            try:
+                response = self._policy.evaluate(synthetic_event)
+            except IntelligenceError as error:
+                latency_ms = int((time.monotonic() - started_at) * 1000)
+                self._publish_provider_failure(client, event.agent_session.id)
+                log_event(
+                    "provider_response_failed",
+                    session_id=event.agent_session.id,
+                    provider=self._model_provider,
+                    model=self._model_name,
+                    latency_ms=latency_ms,
+                    error_category=self._provider_error_category(error),
+                )
+                return
+            usage = response.advisory_result.model_usage
+            log_event(
+                "provider_response_completed",
+                session_id=event.agent_session.id,
+                provider=usage.provider,
+                model=usage.model,
+                latency_ms=int((time.monotonic() - started_at) * 1000),
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                total_tokens=usage.total_tokens,
+                estimated_cost_usd=usage.estimated_cost_usd,
+            )
             client.create_agent_activity(
                 event.agent_session.id,
                 {"type": "response", "body": format_response(response)},
@@ -259,7 +312,33 @@ class LiveProductAgentService:
                 ephemeral=True,
             )
             synthetic_event = self._synthetic_event(event)
-            response = self._policy.evaluate(synthetic_event)
+            started_at = time.monotonic()
+            try:
+                response = self._policy.evaluate(synthetic_event)
+            except IntelligenceError as error:
+                latency_ms = int((time.monotonic() - started_at) * 1000)
+                self._publish_provider_failure(retry_client, event.agent_session.id)
+                log_event(
+                    "provider_response_failed",
+                    session_id=event.agent_session.id,
+                    provider=self._model_provider,
+                    model=self._model_name,
+                    latency_ms=latency_ms,
+                    error_category=self._provider_error_category(error),
+                )
+                return
+            usage = response.advisory_result.model_usage
+            log_event(
+                "provider_response_completed",
+                session_id=event.agent_session.id,
+                provider=usage.provider,
+                model=usage.model,
+                latency_ms=int((time.monotonic() - started_at) * 1000),
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                total_tokens=usage.total_tokens,
+                estimated_cost_usd=usage.estimated_cost_usd,
+            )
             retry_client.create_agent_activity(
                 event.agent_session.id,
                 {"type": "response", "body": format_response(response)},
@@ -315,6 +394,30 @@ class LiveProductAgentService:
     def _installation_has_required_scope(self) -> bool:
         installation = self._installation_store.load_installation()
         return installation is not None and REQUIRED_LINEAR_WRITE_SCOPE in installation.scope
+
+    def _publish_provider_failure(self, client: LinearGraphQLClient, session_id: str) -> None:
+        client.create_agent_activity(
+            session_id,
+            {
+                "type": "response",
+                "body": (
+                    "ProductAgent could not complete the advisory because its model provider was "
+                    "temporarily unavailable.\n\n"
+                    "**Status**\n"
+                    "- No Founder approval was created.\n"
+                    "- No BuilderAgent work was commissioned.\n"
+                    "- No product decision was approved.\n\n"
+                    "**Next step**\n"
+                    "- Retry this request after the provider issue is resolved."
+                ),
+            },
+        )
+
+    @staticmethod
+    def _provider_error_category(error: IntelligenceError) -> str:
+        if isinstance(error, ProviderRuntimeError):
+            return error.category
+        return "invalid_structured_output"
 
     @staticmethod
     def _reject(code: str, reason: str, http_status: int) -> WebhookProcessResult:

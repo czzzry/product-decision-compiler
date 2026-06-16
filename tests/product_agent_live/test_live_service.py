@@ -9,6 +9,7 @@ from pathlib import Path
 from ai_native_studio.product_agent_live.activity_format import format_response
 from ai_native_studio.product_agent_live.config import LiveProductAgentConfig
 from ai_native_studio.product_agent_live.linear_api import LinearAPIError, LinearAuthError
+from ai_native_studio.product_agent_live.logging_utils import redact_mapping
 from ai_native_studio.product_agent_live.models import StoredInstallation
 from ai_native_studio.product_agent_live.server import _not_configured_payload
 from ai_native_studio.product_agent_live.service import LiveProductAgentService
@@ -18,6 +19,7 @@ from ai_native_studio.product_agent_live.storage import (
 )
 from ai_native_studio.product_agent_live.tokens import InstallationStore
 from ai_native_studio.product_agent_proof.dedup import WebhookReceiptStore
+from ai_native_studio.product_agent_proof.intelligence import IntelligenceError
 from ai_native_studio.product_agent_proof.models import (
     AgentSession,
     AgentSessionEvent,
@@ -112,6 +114,15 @@ class FailThenRecoverClient(RecordingGraphClient):
         super().create_agent_activity(session_id, content, ephemeral=ephemeral)
 
 
+class FailingModel:
+    provider_name = "openai"
+    model_name = "gpt-5.4-mini"
+
+    def generate(self, request) -> object:
+        del request
+        raise IntelligenceError("provider failed")
+
+
 def config(tmp_path: Path) -> LiveProductAgentConfig:
     return LiveProductAgentConfig(
         app_env="test",
@@ -135,6 +146,12 @@ def config(tmp_path: Path) -> LiveProductAgentConfig:
         install_scopes=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
         expected_team_name="Product Studio",
         external_url_label="Open ProductAgent",
+        model_provider="fake",
+        openai_model="gpt-5.4-mini",
+        openai_api_key_env_var="OPENAI_API_KEY",
+        openai_timeout_seconds=20,
+        openai_max_retries=2,
+        openai_max_output_tokens=1800,
     )
 
 
@@ -248,6 +265,12 @@ def test_unconfigured_health_and_oauth_routes_are_safe(tmp_path: Path) -> None:
         install_scopes=("read", "comments:create"),
         expected_team_name="Product Studio",
         external_url_label="Open ProductAgent",
+        model_provider="fake",
+        openai_model="gpt-5.4-mini",
+        openai_api_key_env_var="OPENAI_API_KEY",
+        openai_timeout_seconds=20,
+        openai_max_retries=2,
+        openai_max_output_tokens=1800,
     )
     installation_store = InstallationStore(
         live_config.database_path,
@@ -341,6 +364,48 @@ def test_health_requires_write_scope_after_installation(tmp_path: Path) -> None:
 
     assert health.linear_configuration_ready is False
     assert health.missing_configuration == ["linear_installation_requires_reauthorization"]
+    assert health.configured_model_provider == "fake"
+    assert health.configured_model_name == "deterministic-product-adviser-v1"
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_health_reports_missing_openai_provider_configuration(tmp_path: Path) -> None:
+    live_config = config(tmp_path)
+    live_config = LiveProductAgentConfig(
+        **{
+            **live_config.__dict__,
+            "model_provider": "openai",
+            "openai_api_key_env_var": "MISSING_OPENAI_API_KEY",
+        }
+    )
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    receipt_store = WebhookReceiptStore()
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=lambda access_token: RecordingGraphClient(access_token),
+        model=DeterministicFakeProductModel(),
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+
+    health = service.health_check()
+
+    assert health.linear_configuration_ready is False
+    assert health.missing_configuration == ["MISSING_OPENAI_API_KEY"]
+    assert health.configured_model_provider == "openai"
     installation_store.close()
     receipt_store.close()
 
@@ -368,6 +433,12 @@ def test_unconfigured_webhook_is_rejected_without_signature_secret(tmp_path: Pat
         install_scopes=("read", "comments:create"),
         expected_team_name="Product Studio",
         external_url_label="Open ProductAgent",
+        model_provider="fake",
+        openai_model="gpt-5.4-mini",
+        openai_api_key_env_var="OPENAI_API_KEY",
+        openai_timeout_seconds=20,
+        openai_max_retries=2,
+        openai_max_output_tokens=1800,
     )
     installation_store = InstallationStore(
         live_config.database_path,
@@ -416,6 +487,55 @@ def test_webhook_emits_thought_and_response(tmp_path: Path) -> None:
     assert clients
     assert clients[0].activities[0][1]["type"] == "thought"
     assert clients[0].activities[1][1]["type"] == "response"
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_webhook_publishes_safe_response_when_provider_fails(tmp_path: Path, caplog) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    receipt_store = WebhookReceiptStore()
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=FailingModel(),
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+    body = json.dumps(event_payload()).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_000,
+    )
+
+    assert result.status == "accepted"
+    assert clients[0].activities[0][1]["type"] == "thought"
+    assert clients[0].activities[1][1]["type"] == "response"
+    assert "temporarily unavailable" in clients[0].activities[1][1]["body"]
+    assert "No BuilderAgent work was commissioned." in clients[0].activities[1][1]["body"]
+    assert "No Founder approval was created." in clients[0].activities[1][1]["body"]
+    assert "Synthetic prompt context" not in caplog.text
     installation_store.close()
     receipt_store.close()
 
@@ -692,3 +812,21 @@ def test_markdown_formatter_includes_founder_briefing() -> None:
 
     assert "**Founder Briefing**" in markdown
     assert "Approved decisions" in markdown
+
+
+def test_log_redaction_hides_oauth_and_token_fields() -> None:
+    redacted = redact_mapping(
+        {
+            "access_token": "secret-access",
+            "refresh_token": "secret-refresh",
+            "code": "oauth-code",
+            "state": "oauth-state",
+            "prompt": "safe to keep as-is when explicitly logged elsewhere",
+        }
+    )
+
+    assert redacted["access_token"] == "[REDACTED]"
+    assert redacted["refresh_token"] == "[REDACTED]"
+    assert redacted["code"] == "[REDACTED]"
+    assert redacted["state"] == "[REDACTED]"
+    assert redacted["prompt"] == "safe to keep as-is when explicitly logged elsewhere"

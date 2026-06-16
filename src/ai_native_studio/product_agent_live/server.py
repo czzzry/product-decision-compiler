@@ -7,6 +7,12 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from ai_native_studio.product_agent_proof.providers import (
+    OPENAI_MODEL_PRICING,
+    DeterministicFakeProductModel,
+    OpenAIResponsesProductModel,
+)
+
 from .config import load_live_config
 from .linear_api import LinearGraphQLClient, LinearOAuthClient
 from .logging_utils import configure_logging, log_event
@@ -27,6 +33,27 @@ def _not_configured_payload(config) -> dict[str, object]:
     }
 
 
+def _build_model(config):
+    if config.model_provider == "fake":
+        return DeterministicFakeProductModel()
+    if config.model_provider != "openai":
+        raise RuntimeError(f"Unsupported PRODUCT_AGENT_MODEL_PROVIDER: {config.model_provider}")
+    pricing = OPENAI_MODEL_PRICING.get(config.openai_model or "")
+    if pricing is None:
+        raise RuntimeError(
+            "Unsupported PRODUCT_AGENT_OPENAI_MODEL for the current pricing table: "
+            f"{config.openai_model}"
+        )
+    return OpenAIResponsesProductModel(
+        model=config.openai_model or "gpt-5.4-mini",
+        pricing=pricing,
+        api_key_environment_variable=config.openai_api_key_env_var,
+        max_output_tokens=config.openai_max_output_tokens,
+        timeout_seconds=config.openai_timeout_seconds,
+        max_retries=config.openai_max_retries,
+    )
+
+
 def _service() -> tuple[LiveProductAgentService, InstallationStoreProtocol, ReceiptStoreProtocol]:
     config = load_live_config()
     config.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -39,6 +66,7 @@ def _service() -> tuple[LiveProductAgentService, InstallationStoreProtocol, Rece
         installation_store=installation_store,
         oauth_client=oauth_client,
         graph_client_factory=lambda access_token: LinearGraphQLClient(config, access_token),
+        model=_build_model(config),
     )
     return service, installation_store, receipt_store
 

@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class StrictModel(BaseModel):
@@ -60,17 +60,34 @@ class ProductRisk(StrictModel):
 
 
 class ProductAdvisory(StrictModel):
-    understanding_of_objective: str
+    understanding_of_objective: str = Field(
+        validation_alias=AliasChoices("understanding_of_objective", "current_understanding"),
+        serialization_alias="current_understanding",
+    )
     clarifying_questions: list[str]
     assumptions: list[str] = Field(min_length=1)
-    product_recommendations: list[str] = Field(min_length=1)
+    product_recommendations: list[str] = Field(
+        min_length=1,
+        validation_alias=AliasChoices("product_recommendations", "recommendations"),
+        serialization_alias="recommendations",
+    )
     alternative_options: list[str] = Field(min_length=1)
     risks: list[ProductRisk] = Field(min_length=1)
-    proposed_scope: list[str] = Field(min_length=1)
+    proposed_scope: list[str] = Field(
+        min_length=1,
+        validation_alias=AliasChoices("proposed_scope", "smallest_useful_scope"),
+        serialization_alias="smallest_useful_scope",
+    )
     explicit_non_goals: list[str] = Field(min_length=1)
     proposed_acceptance_criteria: list[str] = Field(min_length=1)
-    proposed_success_metrics: list[str] = Field(min_length=1)
+    proposed_success_metrics: list[str] = Field(
+        min_length=1,
+        validation_alias=AliasChoices("proposed_success_metrics", "measurable_exit_criteria"),
+        serialization_alias="measurable_exit_criteria",
+    )
     decisions_requiring_founder_approval: list[str] = Field(min_length=1)
+    approved_decisions: list[str] = Field(default_factory=list)
+    refused_actions: list[str] = Field(default_factory=list)
     founder_authority_statement: Literal[
         "These are ProductAgent recommendations, not Founder-approved decisions."
     ]

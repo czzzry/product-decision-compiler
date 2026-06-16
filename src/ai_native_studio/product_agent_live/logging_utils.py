@@ -14,6 +14,7 @@ SENSITIVE_KEYS = {
     "authorization",
     "token",
     "code",
+    "state",
     "linear-signature",
 }
 

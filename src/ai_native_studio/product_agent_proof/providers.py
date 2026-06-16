@@ -2,9 +2,12 @@
 
 import json
 import os
-import urllib.error
-import urllib.request
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
+
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI, RateLimitError
 
 from .intelligence import IntelligenceError
 from .models import (
@@ -345,10 +348,26 @@ class ModelPricing:
     output_usd_per_million_tokens: float
 
 
-class OpenAIResponsesProductModel:
-    """Manual-evaluation adapter using the OpenAI Responses API structured output format."""
+OPENAI_MODEL_PRICING: dict[str, ModelPricing] = {
+    "gpt-5.4-mini": ModelPricing(0.75, 4.50),
+    "gpt-5.4": ModelPricing(2.50, 15.00),
+    "gpt-5.5": ModelPricing(5.00, 30.00),
+}
 
-    endpoint = "https://api.openai.com/v1/responses"
+
+class ProviderRuntimeError(IntelligenceError):
+    """Provider failure with a redaction-safe category for logging and user fallbacks."""
+
+    def __init__(self, message: str, *, category: str, retryable: bool) -> None:
+        super().__init__(message)
+        self.category = category
+        self.retryable = retryable
+
+
+class OpenAIResponsesProductModel:
+    """OpenAI Responses API adapter with strict structured output and bounded retries."""
+
+    provider_name = "openai"
 
     def __init__(
         self,
@@ -356,47 +375,36 @@ class OpenAIResponsesProductModel:
         model: str,
         pricing: ModelPricing,
         api_key_environment_variable: str = "OPENAI_API_KEY",
-        max_output_tokens: int = 2400,
-        timeout_seconds: int = 60,
+        max_output_tokens: int = 1800,
+        timeout_seconds: int = 20,
+        max_retries: int = 2,
+        client_factory: Callable[[str, float], Any] | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._model = model
         self._pricing = pricing
         self._api_key_environment_variable = api_key_environment_variable
         self._max_output_tokens = max_output_tokens
         self._timeout_seconds = timeout_seconds
+        self._max_retries = max_retries
+        self._client_factory = client_factory or self._default_client_factory
+        self._sleep = sleep
+
+    @property
+    def model_name(self) -> str:
+        return self._model
 
     def generate(self, request: ModelRequest) -> ModelGeneration:
         api_key = os.environ.get(self._api_key_environment_variable)
         if not api_key:
             raise IntelligenceError(
-                f"{self._api_key_environment_variable} is not available for manual evaluation."
+                f"{self._api_key_environment_variable} is not available for ProductAgent."
             )
+        client = self._client_factory(api_key, float(self._timeout_seconds))
+        response = self._invoke_with_retries(client, self._request_body(request))
 
-        body = self._request_body(request)
-        request_bytes = json.dumps(body).encode()
-        http_request = urllib.request.Request(
-            self.endpoint,
-            data=request_bytes,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(http_request, timeout=self._timeout_seconds) as response:
-                payload = json.loads(response.read())
-        except urllib.error.HTTPError as error:
-            raise IntelligenceError(f"OpenAI Responses API returned HTTP {error.code}.") from error
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
-            raise IntelligenceError("OpenAI Responses API request failed.") from error
-        if not isinstance(payload, dict):
-            raise IntelligenceError("OpenAI response was not a JSON object.")
-
-        raw_output = self._extract_output_text(payload)
-        usage_payload = payload.get("usage")
-        if not isinstance(usage_payload, dict):
-            usage_payload = {}
+        raw_output = self._extract_output_text(response)
+        usage_payload = self._extract_usage(response)
         input_tokens = usage_payload.get("input_tokens")
         output_tokens = usage_payload.get("output_tokens")
         total_tokens = usage_payload.get("total_tokens")
@@ -410,7 +418,7 @@ class OpenAIResponsesProductModel:
                 output_tokens=output_tokens,
                 total_tokens=total_tokens,
                 estimated_cost_usd=estimated_cost,
-                cost_basis="Estimate uses Founder-supplied per-million-token rates.",
+                cost_basis="Estimate uses the configured OpenAI pricing for this model.",
             ),
         )
 
@@ -448,10 +456,60 @@ class OpenAIResponsesProductModel:
                     "type": "json_schema",
                     "name": "product_agent_advisory",
                     "strict": True,
-                    "schema": ProductAdvisory.model_json_schema(),
+                    "schema": ProductAdvisory.model_json_schema(
+                        by_alias=True,
+                        mode="serialization",
+                    ),
                 }
             },
         }
+
+    def _invoke_with_retries(self, client: Any, body: dict[str, object]) -> Any:
+        attempts = self._max_retries + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                return client.responses.create(**body)
+            except RateLimitError as error:
+                if attempt >= attempts:
+                    raise ProviderRuntimeError(
+                        "OpenAI rate-limited the ProductAgent request.",
+                        category="rate_limit",
+                        retryable=True,
+                    ) from error
+                self._sleep(0.5 * attempt)
+            except (APITimeoutError, APIConnectionError) as error:
+                if attempt >= attempts:
+                    raise ProviderRuntimeError(
+                        "OpenAI was temporarily unreachable for ProductAgent.",
+                        category="timeout",
+                        retryable=True,
+                    ) from error
+                self._sleep(0.5 * attempt)
+            except APIStatusError as error:
+                if error.status_code in {408, 429, 500, 502, 503, 504} and attempt < attempts:
+                    self._sleep(0.5 * attempt)
+                    continue
+                category = (
+                    "provider_unavailable"
+                    if error.status_code >= 500
+                    else "provider_rejected"
+                )
+                raise ProviderRuntimeError(
+                    f"OpenAI Responses API returned HTTP {error.status_code}.",
+                    category=category,
+                    retryable=error.status_code >= 500,
+                ) from error
+            except Exception as error:
+                raise ProviderRuntimeError(
+                    "OpenAI returned an unexpected ProductAgent provider failure.",
+                    category="unexpected_provider_error",
+                    retryable=False,
+                ) from error
+        raise ProviderRuntimeError(
+            "OpenAI did not return a ProductAgent response.",
+            category="provider_unavailable",
+            retryable=True,
+        )
 
     def _estimate_cost(self, input_tokens: int | None, output_tokens: int | None) -> float:
         input_cost = (input_tokens or 0) * self._pricing.input_usd_per_million_tokens / 1_000_000
@@ -459,22 +517,39 @@ class OpenAIResponsesProductModel:
         return round(input_cost + output_cost, 6)
 
     @staticmethod
-    def _extract_output_text(payload: dict[str, object]) -> str:
-        direct = payload.get("output_text")
+    def _extract_output_text(response: Any) -> str:
+        direct = getattr(response, "output_text", None)
         if isinstance(direct, str) and direct:
             return direct
 
-        output = payload.get("output")
+        output = getattr(response, "output", None)
         if isinstance(output, list):
             for item in output:
-                if not isinstance(item, dict):
-                    continue
-                content = item.get("content")
-                if not isinstance(content, list):
-                    continue
+                content = getattr(item, "content", None)
                 for part in content:
-                    if isinstance(part, dict) and part.get("type") == "output_text":
-                        text = part.get("text")
+                    if getattr(part, "type", None) == "output_text":
+                        text = getattr(part, "text", None)
                         if isinstance(text, str) and text:
                             return text
         raise IntelligenceError("OpenAI response contained no structured output text.")
+
+    @staticmethod
+    def _extract_usage(response: Any) -> dict[str, int | None]:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return {}
+        if isinstance(usage, dict):
+            return {
+                "input_tokens": usage.get("input_tokens"),
+                "output_tokens": usage.get("output_tokens"),
+                "total_tokens": usage.get("total_tokens"),
+            }
+        return {
+            "input_tokens": getattr(usage, "input_tokens", None),
+            "output_tokens": getattr(usage, "output_tokens", None),
+            "total_tokens": getattr(usage, "total_tokens", None),
+        }
+
+    @staticmethod
+    def _default_client_factory(api_key: str, timeout_seconds: float) -> OpenAI:
+        return OpenAI(api_key=api_key, timeout=timeout_seconds, max_retries=0)

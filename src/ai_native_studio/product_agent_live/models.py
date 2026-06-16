@@ -82,3 +82,5 @@ class HealthCheckResult(PermissiveModel):
     linear_configuration_ready: bool
     reason: str
     missing_configuration: list[str] = Field(default_factory=list)
+    configured_model_provider: str | None = None
+    configured_model_name: str | None = None

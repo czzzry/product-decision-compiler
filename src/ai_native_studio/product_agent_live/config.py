@@ -19,6 +19,11 @@ def _optional(name: str) -> str | None:
     return value or None
 
 
+def _int(name: str, default: int) -> int:
+    value = os.environ.get(name, "").strip()
+    return int(value) if value else default
+
+
 @dataclass(frozen=True)
 class LiveProductAgentConfig:
     app_env: str
@@ -42,6 +47,12 @@ class LiveProductAgentConfig:
     install_scopes: tuple[str, ...]
     expected_team_name: str
     external_url_label: str
+    model_provider: str
+    openai_model: str | None
+    openai_api_key_env_var: str
+    openai_timeout_seconds: int
+    openai_max_retries: int
+    openai_max_output_tokens: int
     app_user_id: str | None = None
 
     @property
@@ -79,10 +90,38 @@ class LiveProductAgentConfig:
     def linear_configuration_ready(self) -> bool:
         return not self.missing_linear_configuration
 
+    @property
+    def configured_model_provider(self) -> str:
+        return self.model_provider
+
+    @property
+    def configured_model_name(self) -> str | None:
+        if self.model_provider == "openai":
+            return self.openai_model
+        if self.model_provider == "fake":
+            return "deterministic-product-adviser-v1"
+        return None
+
+    @property
+    def missing_model_configuration(self) -> tuple[str, ...]:
+        missing: list[str] = []
+        if self.model_provider == "openai":
+            if not self.openai_model:
+                missing.append("PRODUCT_AGENT_OPENAI_MODEL")
+            if not _optional(self.openai_api_key_env_var):
+                missing.append(self.openai_api_key_env_var)
+        return tuple(missing)
+
+    @property
+    def model_configuration_ready(self) -> bool:
+        return not self.missing_model_configuration
+
 
 def load_live_config() -> LiveProductAgentConfig:
+    app_env = os.environ.get("APP_ENV", "local")
+    default_model_provider = "fake" if app_env in {"local", "test"} else "openai"
     return LiveProductAgentConfig(
-        app_env=os.environ.get("APP_ENV", "local"),
+        app_env=app_env,
         log_level=os.environ.get("LOG_LEVEL", "INFO"),
         public_base_url=_optional("PRODUCT_AGENT_PUBLIC_BASE_URL"),
         storage_backend=os.environ.get("PRODUCT_AGENT_STORAGE_BACKEND", "sqlite"),
@@ -139,5 +178,18 @@ def load_live_config() -> LiveProductAgentConfig:
             "PRODUCT_AGENT_EXTERNAL_URL_LABEL",
             "Open ProductAgent",
         ),
+        model_provider=os.environ.get(
+            "PRODUCT_AGENT_MODEL_PROVIDER",
+            default_model_provider,
+        ).strip()
+        or default_model_provider,
+        openai_model=_optional("PRODUCT_AGENT_OPENAI_MODEL") or "gpt-5.4-mini",
+        openai_api_key_env_var=os.environ.get(
+            "PRODUCT_AGENT_OPENAI_API_KEY_ENV_VAR",
+            "OPENAI_API_KEY",
+        ),
+        openai_timeout_seconds=_int("PRODUCT_AGENT_OPENAI_TIMEOUT_SECONDS", 20),
+        openai_max_retries=_int("PRODUCT_AGENT_OPENAI_MAX_RETRIES", 2),
+        openai_max_output_tokens=_int("PRODUCT_AGENT_OPENAI_MAX_OUTPUT_TOKENS", 1800),
         app_user_id=os.environ.get("PRODUCT_AGENT_APP_USER_ID") or None,
     )

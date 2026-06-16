@@ -186,3 +186,6 @@ Recommended minimum scopes for the first private test:
 
 The local service is designed to stop safely when installation is missing, a webhook is stale,
 replayed, misrouted, or signed with the wrong secret.
+
+MVP+1 roadmap:
+- Grill Me Mode: add a stricter challenge pass that stress-tests a founder idea before any implementation handoff.

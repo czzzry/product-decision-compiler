@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "role": "ProductAgent",
   "role_version": "2026-06-15.1",
-  "prompt_version": "product-agent-adviser-2026-06-15.1",
+  "prompt_version": "product-agent-adviser-2026-06-16.1",
   "oauth_client_id": "synthetic-product-agent-client",
   "app_user_id": "synthetic-product-agent-user",
   "founder_actor_id": "synthetic-founder-001",
