@@ -179,6 +179,7 @@ What still requires manual Founder setup before any live test:
 Recommended minimum scopes for the first private test:
 
 - `read`
+- `write`
 - `comments:create`
 - `app:assignable`
 - `app:mentionable`

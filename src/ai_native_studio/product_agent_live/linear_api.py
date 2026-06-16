@@ -173,6 +173,12 @@ class LinearGraphQLClient:
         if payload_json.get("errors"):
             first = payload_json["errors"][0]
             message = first.get("message", "Linear GraphQL returned an error.")
+            extensions = first.get("extensions")
+            code = None
+            if isinstance(extensions, dict):
+                code = extensions.get("code")
+            if code:
+                raise LinearAPIError(f"{code}: {message}")
             raise LinearAPIError(str(message))
         data = payload_json.get("data")
         if not isinstance(data, dict):

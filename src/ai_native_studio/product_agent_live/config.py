@@ -130,7 +130,7 @@ def load_live_config() -> LiveProductAgentConfig:
             scope.strip()
             for scope in os.environ.get(
                 "PRODUCT_AGENT_INSTALL_SCOPES",
-                "read,comments:create,app:assignable,app:mentionable",
+                "read,write,comments:create,app:assignable,app:mentionable",
             ).split(",")
             if scope.strip()
         ),

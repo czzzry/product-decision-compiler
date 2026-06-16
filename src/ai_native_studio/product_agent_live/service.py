@@ -34,6 +34,7 @@ from .models import (
 from .storage import InstallationStoreProtocol, ReceiptStoreProtocol
 
 GraphClientFactory = Callable[[str], LinearGraphQLClient]
+REQUIRED_LINEAR_WRITE_SCOPE = "write"
 
 
 class LiveProductAgentService:
@@ -58,11 +59,21 @@ class LiveProductAgentService:
         self._policy = ProductAgentPolicy(self._role, model)
 
     def health_check(self) -> HealthCheckResult:
-        if self._config.linear_configuration_ready:
+        if self._config.linear_configuration_ready and self._installation_has_required_scope():
             return HealthCheckResult(
                 status="ok",
                 linear_configuration_ready=True,
                 reason="ProductAgent is running and Linear configuration is present.",
+            )
+        if self._config.linear_configuration_ready:
+            return HealthCheckResult(
+                status="ok",
+                linear_configuration_ready=False,
+                reason=(
+                    "ProductAgent must be reauthorized because the stored Linear "
+                    "installation token is missing the required write scope."
+                ),
+                missing_configuration=["linear_installation_requires_reauthorization"],
             )
         return HealthCheckResult(
             status="ok",
@@ -89,6 +100,19 @@ class LiveProductAgentService:
             )
 
         installation = self._oauth_client.exchange_code(code)
+        if REQUIRED_LINEAR_WRITE_SCOPE not in installation.scope:
+            log_event(
+                "oauth_installation_scope_incomplete",
+                granted_scope=" ".join(installation.scope),
+                required_scope=REQUIRED_LINEAR_WRITE_SCOPE,
+            )
+            return OAuthCallbackResult(
+                status="rejected",
+                reason=(
+                    "Linear installation did not grant the required write scope. "
+                    "Please reauthorize ProductAgent."
+                ),
+            )
         self._installation_store.save_installation(installation)
         log_event("oauth_installation_stored", scope=" ".join(installation.scope))
         return OAuthCallbackResult(
@@ -168,6 +192,21 @@ class LiveProductAgentService:
             return self._reject(
                 "app_not_installed",
                 "No locally stored Linear installation token is available yet.",
+                503,
+            )
+        if REQUIRED_LINEAR_WRITE_SCOPE not in installation.scope:
+            log_event(
+                "installation_scope_incomplete",
+                session_id=event.agent_session.id,
+                granted_scope=" ".join(installation.scope),
+                required_scope=REQUIRED_LINEAR_WRITE_SCOPE,
+            )
+            return self._reject(
+                "installation_scope_incomplete",
+                (
+                    "The stored Linear installation token is missing the required write "
+                    "scope. Reauthorize ProductAgent before retrying."
+                ),
                 503,
             )
 
@@ -273,6 +312,10 @@ class LiveProductAgentService:
     def _header(headers: Mapping[str, str], name: str) -> str | None:
         expected = name.lower()
         return next((value for key, value in headers.items() if key.lower() == expected), None)
+
+    def _installation_has_required_scope(self) -> bool:
+        installation = self._installation_store.load_installation()
+        return installation is not None and REQUIRED_LINEAR_WRITE_SCOPE in installation.scope
 
     @staticmethod
     def _reject(code: str, reason: str, http_status: int) -> WebhookProcessResult:
