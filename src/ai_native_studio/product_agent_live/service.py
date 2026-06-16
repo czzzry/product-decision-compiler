@@ -224,7 +224,8 @@ class LiveProductAgentService:
                 503,
             )
 
-        receipt = self._receipt_store.reserve(event.webhook_id, payload_sha256, now_ms)
+        receipt_key = self._receipt_key(event)
+        receipt = self._receipt_store.reserve(receipt_key, payload_sha256, now_ms)
         if receipt is ReceiptResult.DUPLICATE:
             return self._reject("duplicate_event", "This webhookId was already processed.", 409)
         if receipt is ReceiptResult.CONFLICT:
@@ -237,10 +238,10 @@ class LiveProductAgentService:
         try:
             self._respond_to_session(event, installation)
         except LinearAPIError as error:
-            self._receipt_store.release(event.webhook_id, payload_sha256)
+            self._receipt_store.release(receipt_key, payload_sha256)
             log_event("linear_response_failed", error=str(error), session_id=event.agent_session.id)
             return self._reject("linear_api_error", str(error), 502)
-        self._receipt_store.complete(event.webhook_id, payload_sha256)
+        self._receipt_store.complete(receipt_key, payload_sha256)
 
         return WebhookProcessResult(
             status="accepted",
@@ -412,6 +413,12 @@ class LiveProductAgentService:
                 ),
             },
         )
+
+    @staticmethod
+    def _receipt_key(event: LiveAgentSessionEvent) -> str:
+        # Linear can reuse webhookId across separate prompt deliveries, so we key receipts
+        # by the webhookId and delivery timestamp to preserve retry deduplication per delivery.
+        return f"{event.webhook_id}:{event.webhook_timestamp}"
 
     @staticmethod
     def _provider_error_category(error: IntelligenceError) -> str:
