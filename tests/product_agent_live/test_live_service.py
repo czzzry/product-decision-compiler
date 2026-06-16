@@ -621,6 +621,51 @@ def test_webhook_allows_retry_after_live_publish_failure_for_same_event(tmp_path
     receipt_store.close()
 
 
+def test_webhook_accepts_distinct_delivery_when_linear_reuses_webhook_id(tmp_path: Path) -> None:
+    service, installation_store, receipt_store, clients = service_fixture(tmp_path)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+
+    first_payload = event_payload()
+    first_payload["webhookId"] = "shared-hook"
+    first_payload["webhookTimestamp"] = 1_700_000_000_000
+    first_body = json.dumps(first_payload).encode("utf-8")
+
+    second_payload = event_payload()
+    second_payload["webhookId"] = "shared-hook"
+    second_payload["webhookTimestamp"] = 1_700_000_005_000
+    second_payload["agentSession"]["id"] = "session-2"
+    second_payload["agentSession"]["comment"] = {
+        "id": "comment-2",
+        "body": "@ProductAgent try again",
+    }
+    second_body = json.dumps(second_payload).encode("utf-8")
+
+    first = service.handle_webhook(
+        first_body,
+        {"Linear-Signature": create_signature(b"webhook-secret", first_body)},
+        now_ms=1_700_000_000_000,
+    )
+    second = service.handle_webhook(
+        second_body,
+        {"Linear-Signature": create_signature(b"webhook-secret", second_body)},
+        now_ms=1_700_000_005_000,
+    )
+
+    assert first.status == "accepted"
+    assert second.status == "accepted"
+    assert len(clients) == 2
+    assert clients[1].activities[1][0] == "session-2"
+    installation_store.close()
+    receipt_store.close()
+
+
 def test_webhook_recovers_legacy_stale_receipt_for_exact_retry_event(tmp_path: Path) -> None:
     live_config = config(tmp_path)
     installation_store = InstallationStore(
@@ -631,7 +676,10 @@ def test_webhook_recovers_legacy_stale_receipt_for_exact_retry_event(tmp_path: P
     receipt_store = FirestoreWebhookReceiptStore(
         InMemoryDocumentStore(
             {
-                ("product_agent_live_webhook_receipts", "62485b93-8902-4c54-825e-771aae306ccf"): {
+                (
+                    "product_agent_live_webhook_receipts",
+                    "62485b93-8902-4c54-825e-771aae306ccf:1781558354576",
+                ): {
                     "webhook_id": "62485b93-8902-4c54-825e-771aae306ccf",
                     "payload_sha256": hashlib.sha256(body).hexdigest(),
                     "received_at_ms": 1_781_558_354_576,
@@ -690,7 +738,10 @@ def test_webhook_recovers_legacy_stale_receipt_when_payload_shape_changes(
     receipt_store = FirestoreWebhookReceiptStore(
         InMemoryDocumentStore(
             {
-                ("product_agent_live_webhook_receipts", "62485b93-8902-4c54-825e-771aae306ccf"): {
+                (
+                    "product_agent_live_webhook_receipts",
+                    "62485b93-8902-4c54-825e-771aae306ccf:1781558354576",
+                ): {
                     "webhook_id": "62485b93-8902-4c54-825e-771aae306ccf",
                     "payload_sha256": (
                         "79ba83c7e1084e4e2c3b9d298b6bd8c6570bd11fffc9614a3a1669997475b826"
