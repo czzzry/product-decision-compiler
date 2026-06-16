@@ -71,6 +71,19 @@ def test_firestore_receipts_survive_reinstantiation_and_reject_replays() -> None
     assert second.reserve("hook-1", "payload-b", 1_700_000_000_002) is ReceiptResult.CONFLICT
 
 
+def test_firestore_completed_receipt_stays_duplicate() -> None:
+    backend: dict[tuple[str, str], dict[str, object]] = {}
+    store = FirestoreWebhookReceiptStore(
+        InMemoryDocumentStore(backend),
+        collection="product_agent_live_webhook_receipts",
+    )
+
+    assert store.reserve("hook-1", "payload-a", 1_700_000_000_000) is ReceiptResult.NEW
+    store.complete("hook-1", "payload-a")
+
+    assert store.reserve("hook-1", "payload-a", 1_700_000_600_000) is ReceiptResult.DUPLICATE
+
+
 def test_firestore_receipt_release_allows_retry_of_same_payload() -> None:
     backend: dict[tuple[str, str], dict[str, object]] = {}
     store = FirestoreWebhookReceiptStore(
@@ -83,6 +96,22 @@ def test_firestore_receipt_release_allows_retry_of_same_payload() -> None:
     store.release("hook-1", "payload-a")
 
     assert store.reserve("hook-1", "payload-a", 1_700_000_000_001) is ReceiptResult.NEW
+
+
+def test_firestore_legacy_stale_receipt_can_be_reclaimed() -> None:
+    backend = {
+        ("product_agent_live_webhook_receipts", "hook-1"): {
+            "webhook_id": "hook-1",
+            "payload_sha256": "payload-a",
+            "received_at_ms": 1_700_000_000_000,
+        }
+    }
+    store = FirestoreWebhookReceiptStore(
+        InMemoryDocumentStore(backend),
+        collection="product_agent_live_webhook_receipts",
+    )
+
+    assert store.reserve("hook-1", "payload-a", 1_700_000_600_001) is ReceiptResult.NEW
 
 
 def test_firestore_approval_ledger_survives_reinstantiation() -> None:

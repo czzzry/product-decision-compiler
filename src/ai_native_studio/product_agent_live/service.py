@@ -213,6 +213,7 @@ class LiveProductAgentService:
             self._receipt_store.release(event.webhook_id, payload_sha256)
             log_event("linear_response_failed", error=str(error), session_id=event.agent_session.id)
             return self._reject("linear_api_error", str(error), 502)
+        self._receipt_store.complete(event.webhook_id, payload_sha256)
 
         return WebhookProcessResult(
             status="accepted",

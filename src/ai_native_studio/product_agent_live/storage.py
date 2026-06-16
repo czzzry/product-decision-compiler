@@ -42,6 +42,8 @@ class ReceiptStoreProtocol(Protocol):
         self, webhook_id: str, payload_sha256: str, received_at_ms: int
     ) -> ReceiptResult: ...
 
+    def complete(self, webhook_id: str, payload_sha256: str) -> None: ...
+
     def release(self, webhook_id: str, payload_sha256: str) -> None: ...
 
     def close(self) -> None: ...
@@ -292,14 +294,36 @@ class FirestoreWebhookReceiptStore:
                 "webhook_id": webhook_id,
                 "payload_sha256": payload_sha256,
                 "received_at_ms": received_at_ms,
+                "status": "reserved",
             },
         )
         if created:
             return ReceiptResult.NEW
         existing = self._document_store.get_document(self._collection, webhook_id)
         if existing and existing["payload_sha256"] == payload_sha256:
-            return ReceiptResult.DUPLICATE
+            status = str(existing.get("status", "reserved"))
+            age_ms = received_at_ms - int(existing["received_at_ms"])
+            if status == "completed" or age_ms <= 5 * 60 * 1000:
+                return ReceiptResult.DUPLICATE
+            self._document_store.set_document(
+                self._collection,
+                webhook_id,
+                {
+                    "webhook_id": webhook_id,
+                    "payload_sha256": payload_sha256,
+                    "received_at_ms": received_at_ms,
+                    "status": "reserved",
+                },
+            )
+            return ReceiptResult.NEW
         return ReceiptResult.CONFLICT
+
+    def complete(self, webhook_id: str, payload_sha256: str) -> None:
+        existing = self._document_store.get_document(self._collection, webhook_id)
+        if existing and existing["payload_sha256"] == payload_sha256:
+            updated = dict(existing)
+            updated["status"] = "completed"
+            self._document_store.set_document(self._collection, webhook_id, updated)
 
     def release(self, webhook_id: str, payload_sha256: str) -> None:
         existing = self._document_store.get_document(self._collection, webhook_id)
