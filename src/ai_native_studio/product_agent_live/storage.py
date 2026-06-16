@@ -13,6 +13,8 @@ from .config import LiveProductAgentConfig
 from .models import StoredInstallation
 from .product_briefs import (
     ProductBriefApprovalRecord,
+    ProductBriefOperationRecord,
+    ProductBriefOperationStoreProtocol,
     ProductBriefStoreProtocol,
     ProductBriefVersion,
     RequestProvenance,
@@ -436,6 +438,41 @@ class FirestoreProductBriefStore(InMemoryProductBriefStore):
         super().__init__(document_store, collection_prefix=collection_prefix)
 
 
+class InMemoryProductBriefOperationStore:
+    def __init__(
+        self,
+        document_store: DocumentStoreProtocol | None = None,
+        *,
+        collection_prefix: str = "product_agent_live",
+    ) -> None:
+        self._document_store = document_store or InMemoryDocumentStore()
+        self._collection = f"{collection_prefix}_product_brief_operations"
+
+    def get_operation(self, operation_key: str) -> ProductBriefOperationRecord | None:
+        payload = self._document_store.get_document(self._collection, operation_key)
+        return None if payload is None else ProductBriefOperationRecord.model_validate(payload)
+
+    def create_operation(self, record: ProductBriefOperationRecord) -> bool:
+        return self._document_store.create_document(
+            self._collection,
+            record.operation_key,
+            record.model_dump(),
+        )
+
+    def close(self) -> None:
+        self._document_store.close()
+
+
+class FirestoreProductBriefOperationStore(InMemoryProductBriefOperationStore):
+    def __init__(
+        self,
+        document_store: DocumentStoreProtocol,
+        *,
+        collection_prefix: str,
+    ) -> None:
+        super().__init__(document_store, collection_prefix=collection_prefix)
+
+
 class InMemoryRequestProvenanceStore:
     def __init__(
         self,
@@ -506,6 +543,22 @@ def build_product_brief_store(config: LiveProductAgentConfig) -> ProductBriefSto
             collection_prefix=config.firestore_collection_prefix,
         )
     return InMemoryProductBriefStore(collection_prefix=config.firestore_collection_prefix)
+
+
+def build_product_brief_operation_store(
+    config: LiveProductAgentConfig,
+) -> ProductBriefOperationStoreProtocol:
+    if config.storage_backend == "firestore":
+        return FirestoreProductBriefOperationStore(
+            FirestoreDocumentStore(
+                project_id=config.firestore_project_id,
+                database_id=config.firestore_database_id,
+            ),
+            collection_prefix=config.firestore_collection_prefix,
+        )
+    return InMemoryProductBriefOperationStore(
+        collection_prefix=config.firestore_collection_prefix,
+    )
 
 
 def build_request_provenance_store(

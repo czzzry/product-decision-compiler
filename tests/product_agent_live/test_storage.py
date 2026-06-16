@@ -6,12 +6,14 @@ from ai_native_studio.product_agent_live.models import StoredInstallation
 from ai_native_studio.product_agent_live.product_briefs import (
     CreatorIdentity,
     ProductBriefApprovalRecord,
+    ProductBriefOperationRecord,
     ProductBriefVersion,
     RequestProvenance,
 )
 from ai_native_studio.product_agent_live.storage import (
     FirestoreApprovalLedger,
     FirestoreInstallationStore,
+    FirestoreProductBriefOperationStore,
     FirestoreProductBriefStore,
     FirestoreRequestProvenanceStore,
     FirestoreWebhookReceiptStore,
@@ -265,3 +267,39 @@ def test_firestore_request_provenance_store_survives_reinstantiation() -> None:
     assert stored is not None
     assert stored.source_linear_issue_identifier == "PRO-3"
     assert stored.exact_triggering_instruction == "@ProductAgent please help"
+
+
+def test_firestore_product_brief_operation_store_survives_reinstantiation() -> None:
+    backend: dict[tuple[str, str], dict[str, object]] = {}
+    first = FirestoreProductBriefOperationStore(
+        InMemoryDocumentStore(backend),
+        collection_prefix="product_agent_live",
+    )
+    record = ProductBriefOperationRecord(
+        operation_key="op-1",
+        operation_type="create_or_reuse",
+        source_linear_workspace_id="workspace-1",
+        source_linear_team_id="team-1",
+        source_linear_issue_id="issue-1",
+        source_linear_issue_identifier="PRO-3",
+        source_comment_id="comment-1",
+        source_activity_id="activity-1",
+        source_event_id="webhook-1",
+        exact_triggering_instruction="@ProductAgent Create a versioned Product Brief.",
+        product_brief_version_id="brief-pro-3-v1",
+        content_hash="a" * 64,
+        result_status="created",
+        processed_at_ms=1_700_000_000_000,
+    )
+    assert first.create_operation(record)
+    first.close()
+
+    second = FirestoreProductBriefOperationStore(
+        InMemoryDocumentStore(backend),
+        collection_prefix="product_agent_live",
+    )
+
+    stored = second.get_operation("op-1")
+    assert stored is not None
+    assert stored.product_brief_version_id == "brief-pro-3-v1"
+    assert stored.source_activity_id == "activity-1"

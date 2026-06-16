@@ -57,6 +57,7 @@ class RequestProvenance(StrictModel):
     source_linear_issue_id: str
     source_linear_issue_identifier: str
     source_comment_id: str | None = None
+    source_activity_id: str | None = None
     source_event_id: str
     exact_triggering_instruction: str
     received_at_ms: int
@@ -111,6 +112,23 @@ class ProductBriefApprovalResult(StrictModel):
     brief: ProductBriefVersion | None = None
 
 
+class ProductBriefOperationRecord(StrictModel):
+    operation_key: str
+    operation_type: Literal["create_or_reuse"]
+    source_linear_workspace_id: str
+    source_linear_team_id: str
+    source_linear_issue_id: str
+    source_linear_issue_identifier: str
+    source_comment_id: str | None = None
+    source_activity_id: str | None = None
+    source_event_id: str
+    exact_triggering_instruction: str
+    product_brief_version_id: str
+    content_hash: str
+    result_status: Literal["created", "reused"]
+    processed_at_ms: int
+
+
 @dataclass(frozen=True)
 class ApprovalCommandClassification:
     kind: Literal["exact", "invalid", "none"]
@@ -134,6 +152,14 @@ class ProductBriefStoreProtocol(Protocol):
     def create_approval(self, record: ProductBriefApprovalRecord) -> bool: ...
 
     def get_approval(self, approval_id: str) -> ProductBriefApprovalRecord | None: ...
+
+    def close(self) -> None: ...
+
+
+class ProductBriefOperationStoreProtocol(Protocol):
+    def get_operation(self, operation_key: str) -> ProductBriefOperationRecord | None: ...
+
+    def create_operation(self, record: ProductBriefOperationRecord) -> bool: ...
 
     def close(self) -> None: ...
 
@@ -449,11 +475,27 @@ class ProductBriefService:
         *,
         store: ProductBriefStoreProtocol,
         intelligence: ProductBriefIntelligence,
+        operation_store: ProductBriefOperationStoreProtocol | None = None,
     ) -> None:
         self._store = store
         self._intelligence = intelligence
+        if operation_store is None:
+            from .storage import InMemoryProductBriefOperationStore
+
+            self._operation_store = InMemoryProductBriefOperationStore()
+        else:
+            self._operation_store = operation_store
 
     def create_or_reuse(self, context: ProductBriefContext, source_text: str) -> ProductBriefResult:
+        operation_key = _operation_key("create_or_reuse", context.request_provenance)
+        existing_operation = self._operation_store.get_operation(operation_key)
+        if existing_operation is not None:
+            existing_brief = self._store.get_version(existing_operation.product_brief_version_id)
+            if existing_brief is not None:
+                return ProductBriefResult(
+                    status="reused",
+                    brief=existing_brief,
+                )
         draft = self._intelligence.create_draft(source_text)
         brief_id = self._brief_id(context.source_linear_issue_identifier)
         existing_versions = self._store.list_versions(brief_id)
@@ -499,6 +541,24 @@ class ProductBriefService:
         if latest is not None and latest.status in {"draft", "awaiting_founder_approval"}:
             self._store.save_version(latest.model_copy(update={"status": "superseded"}))
         self._store.create_version(brief)
+        self._operation_store.create_operation(
+            ProductBriefOperationRecord(
+                operation_key=operation_key,
+                operation_type="create_or_reuse",
+                source_linear_workspace_id=context.source_linear_workspace_id,
+                source_linear_team_id=context.source_linear_team_id,
+                source_linear_issue_id=context.source_linear_issue_id,
+                source_linear_issue_identifier=context.source_linear_issue_identifier,
+                source_comment_id=context.request_provenance.source_comment_id,
+                source_activity_id=context.request_provenance.source_activity_id,
+                source_event_id=context.request_provenance.source_event_id,
+                exact_triggering_instruction=context.request_provenance.exact_triggering_instruction,
+                product_brief_version_id=brief.version_id,
+                content_hash=brief.content_hash,
+                result_status="created",
+                processed_at_ms=context.created_at_ms,
+            )
+        )
         return ProductBriefResult(status="created", brief=brief)
 
     def approve(
@@ -658,6 +718,20 @@ def classify_approval_command(text: str) -> ApprovalCommandClassification:
 def parse_approval_command(text: str) -> str | None:
     classification = classify_approval_command(text)
     return classification.version_id if classification.kind == "exact" else None
+
+
+def _operation_key(operation_type: str, provenance: RequestProvenance) -> str:
+    payload = {
+        "operation_type": operation_type,
+        "source_linear_workspace_id": provenance.source_linear_workspace_id,
+        "source_linear_team_id": provenance.source_linear_team_id,
+        "source_linear_issue_id": provenance.source_linear_issue_id,
+        "source_comment_id": provenance.source_comment_id,
+        "source_activity_id": provenance.source_activity_id,
+        "source_event_id": provenance.source_event_id,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return "op-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
 
 
 def canonical_content_hash(

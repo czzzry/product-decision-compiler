@@ -53,6 +53,7 @@ from .storage import (
     InMemoryProductBriefStore,
     InMemoryRequestProvenanceStore,
     InstallationStoreProtocol,
+    ProductBriefOperationStoreProtocol,
     ProductBriefStoreProtocol,
     ReceiptStoreProtocol,
     RequestProvenanceStoreProtocol,
@@ -70,6 +71,7 @@ class LiveProductAgentService:
         receipt_store: ReceiptStoreProtocol,
         installation_store: InstallationStoreProtocol,
         product_brief_store: ProductBriefStoreProtocol | None = None,
+        product_brief_operation_store: ProductBriefOperationStoreProtocol | None = None,
         request_provenance_store: RequestProvenanceStoreProtocol | None = None,
         oauth_client: LinearOAuthClient,
         graph_client_factory: GraphClientFactory,
@@ -81,6 +83,7 @@ class LiveProductAgentService:
         self._receipt_store = receipt_store
         self._installation_store = installation_store
         self._product_brief_store = product_brief_store or InMemoryProductBriefStore()
+        self._product_brief_operation_store = product_brief_operation_store
         self._request_provenance_store = (
             request_provenance_store or InMemoryRequestProvenanceStore()
         )
@@ -94,6 +97,7 @@ class LiveProductAgentService:
         self._product_briefs = ProductBriefService(
             store=self._product_brief_store,
             intelligence=ProductBriefIntelligence(self._brief_model),
+            operation_store=self._product_brief_operation_store,
         )
         self._model_provider = getattr(model, "provider_name", config.configured_model_provider)
         self._model_name = getattr(model, "model_name", config.configured_model_name)
@@ -332,28 +336,16 @@ class LiveProductAgentService:
         command_text = self._comment_text(event)
         approval = classify_approval_command(command_text)
         if approval.kind != "none":
-            if approval.kind == "exact":
-                result = self._product_briefs.approve(
-                    founder_linear_user_id=self._founder_linear_user_id(),
-                    authenticated_actor_id=self._resolve_authenticated_actor_id(event, client),
-                    app_user_id=event.app_user_id,
-                    command_text=command_text,
-                    source_comment_id=(
-                        event.agent_session.comment.id if event.agent_session.comment else ""
-                    ),
-                    now_ms=event.webhook_timestamp,
-                )
-            else:
-                result = self._product_briefs.approve(
-                    founder_linear_user_id=self._founder_linear_user_id(),
-                    authenticated_actor_id="",
-                    app_user_id=event.app_user_id,
-                    command_text=command_text,
-                    source_comment_id=(
-                        event.agent_session.comment.id if event.agent_session.comment else ""
-                    ),
-                    now_ms=event.webhook_timestamp,
-                )
+            result = self._product_briefs.approve(
+                founder_linear_user_id=self._founder_linear_user_id(),
+                authenticated_actor_id=self._resolve_authenticated_actor_id(event, client)
+                if approval.kind == "exact"
+                else "",
+                app_user_id=event.app_user_id,
+                command_text=command_text,
+                source_comment_id=self._source_command_comment_id(event) or "",
+                now_ms=event.webhook_timestamp,
+            )
             client.create_agent_activity(
                 event.agent_session.id,
                 {"type": "response", "body": format_approval_response(result, provenance)},
@@ -595,19 +587,17 @@ class LiveProductAgentService:
 
     @staticmethod
     def _comment_text(event: LiveAgentSessionEvent) -> str:
-        session = event.agent_session
-        if session.comment and session.comment.body.strip():
-            return session.comment.body.strip()
-        if event.action == "prompted" and event.agent_activity is not None:
-            return event.agent_activity.body.strip()
-        return session.issue.description.strip()
+        return LiveProductAgentService._current_instruction_body(event)
 
     @staticmethod
     def _collect_live_context(event: LiveAgentSessionEvent) -> str:
         session = event.agent_session
-        parts = [session.issue.title, session.issue.description, session.prompt_context]
-        if session.comment:
-            parts.append(session.comment.body)
+        parts = [
+            session.issue.title,
+            session.issue.description,
+            session.prompt_context,
+            LiveProductAgentService._current_instruction_body(event),
+        ]
         parts.extend(str(item) for item in session.guidance)
         parts.extend(comment.body for comment in session.previous_comments if comment.body)
         return "\n".join(part for part in parts if part)
@@ -657,14 +647,20 @@ class LiveProductAgentService:
                 "ProductAgent could not determine the Linear workspace and team IDs for this issue."
             )
         comment = event.agent_session.comment
+        activity = event.agent_activity if event.action == "prompted" else None
         instruction = self._comment_text(event)
         return RequestProvenance(
-            source_type="comment" if comment and comment.body.strip() else "issue_description",
+            source_type=(
+                "comment"
+                if (comment and comment.body.strip()) or (activity and activity.body.strip())
+                else "issue_description"
+            ),
             source_linear_workspace_id=workspace_id,
             source_linear_team_id=team_id,
             source_linear_issue_id=event.agent_session.issue.id,
             source_linear_issue_identifier=event.agent_session.issue.identifier,
-            source_comment_id=comment.id if comment and comment.body.strip() else None,
+            source_comment_id=self._source_command_comment_id(event),
+            source_activity_id=self._source_command_activity_id(event),
             source_event_id=self._source_event_id(event),
             exact_triggering_instruction=instruction,
             received_at_ms=event.webhook_timestamp,
@@ -680,6 +676,33 @@ class LiveProductAgentService:
             if activity_id:
                 return activity_id
         return event.webhook_id
+
+    @staticmethod
+    def _source_command_comment_id(event: LiveAgentSessionEvent) -> str | None:
+        comment = event.agent_session.comment
+        if comment and comment.body.strip():
+            return comment.id
+        return None
+
+    @staticmethod
+    def _source_command_activity_id(event: LiveAgentSessionEvent) -> str | None:
+        if event.action != "prompted" or event.agent_activity is None:
+            return None
+        body = event.agent_activity.body.strip()
+        if not body:
+            return None
+        return LiveProductAgentService._extract_metadata_value(event.agent_activity, "id")
+
+    @staticmethod
+    def _current_instruction_body(event: LiveAgentSessionEvent) -> str:
+        session = event.agent_session
+        if event.action == "prompted" and event.agent_activity is not None:
+            body = event.agent_activity.body.strip()
+            if body:
+                return body
+        if session.comment and session.comment.body.strip():
+            return session.comment.body.strip()
+        return session.issue.description.strip()
 
     @staticmethod
     def _invocation_id(event: LiveAgentSessionEvent) -> str:
