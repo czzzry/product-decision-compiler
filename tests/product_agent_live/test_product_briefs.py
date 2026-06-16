@@ -617,6 +617,43 @@ def test_prompted_event_uses_latest_human_prompt(tmp_path: Path) -> None:
     receipt_store.close()
 
 
+def test_prompted_event_falls_back_to_session_comment_when_activity_is_missing(
+    tmp_path: Path,
+) -> None:
+    service, installation_store, receipt_store, clients = _service_fixture(tmp_path)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    payload = _event_payload()
+    payload["action"] = "prompted"
+    payload["webhookId"] = "hook-prompted-2"
+    payload.pop("agentActivity", None)
+    payload["agentSession"]["comment"]["body"] = (
+        "@ProductAgent Create a versioned Product Brief from the current Email Agent discussion."
+    )
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_002,
+    )
+
+    assert result.status == "accepted"
+    assert clients[0].activities[1][1]["body"].startswith(
+        "Request received\n> @ProductAgent Create a versioned Product Brief from the current "
+        "Email Agent discussion."
+    )
+    assert "created a versioned Product Brief" in clients[0].activities[1][1]["body"]
+    installation_store.close()
+    receipt_store.close()
+
+
 def test_inline_backtick_approval_parsing_requires_no_model_call(tmp_path: Path) -> None:
     config = _approval_service_config(tmp_path)
     installation_store = InstallationStore(config.database_path, config.token_encryption_key)

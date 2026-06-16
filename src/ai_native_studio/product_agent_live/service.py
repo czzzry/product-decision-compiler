@@ -647,11 +647,6 @@ class LiveProductAgentService:
                 "where a user command was expected."
             )
 
-        if event.action == "prompted":
-            raise LinearAPIError(
-                "ProductAgent could not identify a current user prompt for the prompted webhook."
-            )
-
         instruction = self._current_instruction_body(event)
         if not instruction.strip():
             raise LinearAPIError(
