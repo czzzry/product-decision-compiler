@@ -56,8 +56,10 @@ class RequestProvenance(StrictModel):
     source_linear_team_id: str
     source_linear_issue_id: str
     source_linear_issue_identifier: str
+    source_agent_session_id: str | None = None
     source_comment_id: str | None = None
     source_activity_id: str | None = None
+    source_activity_typename: str | None = None
     source_event_id: str
     exact_triggering_instruction: str
     received_at_ms: int
@@ -95,6 +97,8 @@ class ProductBriefApprovalRecord(StrictModel):
     product_brief_version_id: str
     content_hash: str
     source_issue_id: str
+    source_event_id: str
+    source_event_activity_id: str | None = None
     source_event_comment_id: str
     approved_at_ms: int
 
@@ -119,8 +123,10 @@ class ProductBriefOperationRecord(StrictModel):
     source_linear_team_id: str
     source_linear_issue_id: str
     source_linear_issue_identifier: str
+    source_agent_session_id: str | None = None
     source_comment_id: str | None = None
     source_activity_id: str | None = None
+    source_activity_typename: str | None = None
     source_event_id: str
     exact_triggering_instruction: str
     product_brief_version_id: str
@@ -549,8 +555,10 @@ class ProductBriefService:
                 source_linear_team_id=context.source_linear_team_id,
                 source_linear_issue_id=context.source_linear_issue_id,
                 source_linear_issue_identifier=context.source_linear_issue_identifier,
+                source_agent_session_id=context.request_provenance.source_agent_session_id,
                 source_comment_id=context.request_provenance.source_comment_id,
                 source_activity_id=context.request_provenance.source_activity_id,
+                source_activity_typename=context.request_provenance.source_activity_typename,
                 source_event_id=context.request_provenance.source_event_id,
                 exact_triggering_instruction=context.request_provenance.exact_triggering_instruction,
                 product_brief_version_id=brief.version_id,
@@ -570,6 +578,8 @@ class ProductBriefService:
         command_text: str,
         source_comment_id: str,
         now_ms: int,
+        source_event_id: str | None = None,
+        source_activity_id: str | None = None,
     ) -> ProductBriefApprovalResult:
         classification = classify_approval_command(command_text)
         if classification.kind != "exact" or classification.version_id is None:
@@ -601,7 +611,9 @@ class ProductBriefService:
                 code="unauthorized_actor",
                 reason="Only the configured Founder Linear user may approve a Product Brief.",
             )
-        approval_id = _approval_id(founder_linear_user_id, parsed, source_comment_id)
+        source_event_id = source_event_id or source_comment_id
+        command_id = source_activity_id or source_comment_id or source_event_id or ""
+        approval_id = _approval_id(founder_linear_user_id, parsed, command_id)
         existing_record = self._store.get_approval(approval_id)
         if existing_record is not None:
             existing_brief = self._store.get_version(parsed)
@@ -668,6 +680,8 @@ class ProductBriefService:
             product_brief_version_id=brief.version_id,
             content_hash=brief.content_hash,
             source_issue_id=brief.source_linear_issue_id,
+            source_event_id=source_event_id or "",
+            source_event_activity_id=source_activity_id,
             source_event_comment_id=source_comment_id,
             approved_at_ms=now_ms,
         )
@@ -723,6 +737,7 @@ def parse_approval_command(text: str) -> str | None:
 def _operation_key(operation_type: str, provenance: RequestProvenance) -> str:
     payload = {
         "operation_type": operation_type,
+        "source_agent_session_id": provenance.source_agent_session_id,
         "source_linear_workspace_id": provenance.source_linear_workspace_id,
         "source_linear_team_id": provenance.source_linear_team_id,
         "source_linear_issue_id": provenance.source_linear_issue_id,

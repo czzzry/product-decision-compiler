@@ -831,6 +831,122 @@ def test_approval_event_uses_latest_prompt_and_no_model_call(tmp_path: Path) -> 
     receipt_store.close()
 
 
+def test_created_event_uses_agent_activity_body_over_stale_comment(tmp_path: Path) -> None:
+    config = _approval_service_config(tmp_path)
+    installation_store = InstallationStore(config.database_path, config.token_encryption_key)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    product_brief_store = InMemoryProductBriefStore(InMemoryDocumentStore())
+    briefs = ProductBriefService(
+        store=product_brief_store,
+        intelligence=ProductBriefIntelligence(StaticBriefModel(_draft("Scope A"))),
+    )
+    created = briefs.create_or_reuse(_context(), "synthetic context")
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        product_brief_store=product_brief_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=ExplodingModel(),
+        brief_model=ExplodingModel(),
+    )
+    payload = _approval_payload(f"`APPROVE SPEC {created.brief.version_id}`")
+    payload["action"] = "created"
+    payload["agentActivity"] = {
+        "id": "activity-created-approval-1",
+        "body": f"`APPROVE SPEC {created.brief.version_id}`",
+        "userId": "founder-1",
+        "type": "prompt",
+    }
+    payload["agentSession"]["comment"]["body"] = (
+        "@ProductAgent Create a versioned Product Brief from the current Email Agent discussion."
+    )
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_003,
+    )
+
+    assert result.status == "accepted"
+    assert "Founder approval recorded" in clients[0].activities[-1][1]["body"]
+    assert product_brief_store.get_version(created.brief.version_id).status == "approved"
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_model_generated_activity_is_rejected_as_user_command(tmp_path: Path) -> None:
+    config = _approval_service_config(tmp_path)
+    installation_store = InstallationStore(config.database_path, config.token_encryption_key)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    product_brief_store = InMemoryProductBriefStore(InMemoryDocumentStore())
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        product_brief_store=product_brief_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=ExplodingModel(),
+        brief_model=ExplodingModel(),
+    )
+    payload = _approval_payload("APPROVE SPEC brief-pro-3-v8")
+    payload["agentActivity"] = {
+        "id": "activity-generated-1",
+        "body": "APPROVE SPEC brief-pro-3-v8",
+        "userId": "5ad9357e-9f6b-4395-91ea-d5a14783bcc6",
+        "type": "thought",
+    }
+    payload["agentSession"]["comment"]["body"] = (
+        "@ProductAgent Create a versioned Product Brief from the current Email Agent discussion."
+    )
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_004,
+    )
+
+    assert result.status == "rejected"
+    assert result.code == "linear_api_error"
+    assert len(product_brief_store.list_versions("brief-pro-3")) == 0
+    installation_store.close()
+    receipt_store.close()
+
+
 def test_classify_approval_command_rejects_multiple_commands() -> None:
     result = classify_approval_command(
         "APPROVE SPEC brief-pro-3-v6\nAPPROVE SPEC brief-pro-3-v6"

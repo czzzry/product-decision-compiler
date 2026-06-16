@@ -221,6 +221,7 @@ def test_firestore_product_brief_store_survives_reinstantiation() -> None:
             product_brief_version_id="brief-pro-3-v1",
             content_hash="a" * 64,
             source_issue_id="issue-1",
+            source_event_id="webhook-1",
             source_event_comment_id="comment-1",
             approved_at_ms=1_700_000_100_000,
         )

@@ -24,7 +24,10 @@ class LiveLinearComment(PermissiveModel):
 
 
 class PromptActivity(PermissiveModel):
+    id: str | None = None
     body: str = ""
+    type: str | None = None
+    typename: str | None = Field(default=None, alias="__typename")
 
 
 class LiveAgentSession(PermissiveModel):
