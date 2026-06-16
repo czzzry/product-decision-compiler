@@ -44,9 +44,9 @@ from .product_briefs import (
     ProductBriefIntelligence,
     ProductBriefService,
     RequestProvenance,
+    classify_approval_command,
     format_approval_response,
     format_product_brief_response,
-    parse_approval_command,
     requests_product_brief,
 )
 from .storage import (
@@ -330,17 +330,30 @@ class LiveProductAgentService:
         provenance: RequestProvenance,
     ) -> None:
         command_text = self._comment_text(event)
-        if parse_approval_command(command_text) is not None:
-            result = self._product_briefs.approve(
-                founder_linear_user_id=self._founder_linear_user_id(),
-                authenticated_actor_id=self._resolve_authenticated_actor_id(event, client),
-                app_user_id=event.app_user_id,
-                command_text=command_text,
-                source_comment_id=(
-                    event.agent_session.comment.id if event.agent_session.comment else ""
-                ),
-                now_ms=event.webhook_timestamp,
-            )
+        approval = classify_approval_command(command_text)
+        if approval.kind != "none":
+            if approval.kind == "exact":
+                result = self._product_briefs.approve(
+                    founder_linear_user_id=self._founder_linear_user_id(),
+                    authenticated_actor_id=self._resolve_authenticated_actor_id(event, client),
+                    app_user_id=event.app_user_id,
+                    command_text=command_text,
+                    source_comment_id=(
+                        event.agent_session.comment.id if event.agent_session.comment else ""
+                    ),
+                    now_ms=event.webhook_timestamp,
+                )
+            else:
+                result = self._product_briefs.approve(
+                    founder_linear_user_id=self._founder_linear_user_id(),
+                    authenticated_actor_id="",
+                    app_user_id=event.app_user_id,
+                    command_text=command_text,
+                    source_comment_id=(
+                        event.agent_session.comment.id if event.agent_session.comment else ""
+                    ),
+                    now_ms=event.webhook_timestamp,
+                )
             client.create_agent_activity(
                 event.agent_session.id,
                 {"type": "response", "body": format_approval_response(result, provenance)},
@@ -602,7 +615,7 @@ class LiveProductAgentService:
     def _thought_message(self, event: LiveAgentSessionEvent, refreshed: bool = False) -> str:
         prefix = "ProductAgent resumed after refreshing its Linear token. " if refreshed else ""
         command_text = self._comment_text(event)
-        if parse_approval_command(command_text):
+        if classify_approval_command(command_text).kind != "none":
             return (
                 prefix
                 + "ProductAgent is validating the Founder approval command deterministically."

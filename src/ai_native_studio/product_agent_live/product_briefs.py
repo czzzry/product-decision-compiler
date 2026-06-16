@@ -21,6 +21,10 @@ PRODUCT_BRIEF_REQUEST_PATTERN = re.compile(
     r"(?is)\bcreate\b.*\bversioned\b.*\bproduct brief\b"
 )
 APPROVAL_COMMAND_PATTERN = re.compile(r"^APPROVE SPEC ([A-Za-z0-9._-]+)$")
+APPROVAL_FENCED_CODE_PATTERN = re.compile(
+    r"(?s)^```(?:[A-Za-z0-9_-]+)?[ \t]*\n(?P<body>.*?)\n```$"
+)
+APPROVAL_INTENT_PATTERN = re.compile(r"\bapprove\s+spec\b", re.IGNORECASE)
 
 
 class StrictModel(BaseModel):
@@ -105,6 +109,13 @@ class ProductBriefApprovalResult(StrictModel):
     reason: str
     record: ProductBriefApprovalRecord | None = None
     brief: ProductBriefVersion | None = None
+
+
+@dataclass(frozen=True)
+class ApprovalCommandClassification:
+    kind: Literal["exact", "invalid", "none"]
+    normalized_text: str
+    version_id: str | None = None
 
 
 class ProductBriefModel(Protocol):
@@ -500,13 +511,14 @@ class ProductBriefService:
         source_comment_id: str,
         now_ms: int,
     ) -> ProductBriefApprovalResult:
-        parsed = parse_approval_command(command_text)
-        if parsed is None:
+        classification = classify_approval_command(command_text)
+        if classification.kind != "exact" or classification.version_id is None:
             return ProductBriefApprovalResult(
                 status="rejected",
                 code="approval_command_malformed",
                 reason="Approval requires the exact syntax `APPROVE SPEC <version_id>`.",
             )
+        parsed = classification.version_id
         if authenticated_actor_id == app_user_id:
             return ProductBriefApprovalResult(
                 status="rejected",
@@ -629,9 +641,23 @@ def requests_product_brief(text: str) -> bool:
     return bool(PRODUCT_BRIEF_REQUEST_PATTERN.search(text))
 
 
+def classify_approval_command(text: str) -> ApprovalCommandClassification:
+    normalized = _normalize_approval_command_text(text)
+    match = APPROVAL_COMMAND_PATTERN.fullmatch(normalized)
+    if match:
+        return ApprovalCommandClassification(
+            kind="exact",
+            normalized_text=normalized,
+            version_id=match.group(1),
+        )
+    if _is_approval_like_intent(normalized):
+        return ApprovalCommandClassification(kind="invalid", normalized_text=normalized)
+    return ApprovalCommandClassification(kind="none", normalized_text=normalized)
+
+
 def parse_approval_command(text: str) -> str | None:
-    match = APPROVAL_COMMAND_PATTERN.fullmatch(text.strip())
-    return match.group(1) if match else None
+    classification = classify_approval_command(text)
+    return classification.version_id if classification.kind == "exact" else None
 
 
 def canonical_content_hash(
@@ -752,6 +778,27 @@ def _normalize_text(value: str) -> str:
 
 def _normalize_list(values: list[str]) -> list[str]:
     return [_normalize_text(value) for value in values if _normalize_text(value)]
+
+
+def _normalize_approval_command_text(text: str) -> str:
+    normalized = text.strip()
+    fenced = APPROVAL_FENCED_CODE_PATTERN.fullmatch(normalized)
+    if fenced is not None:
+        normalized = fenced.group("body").strip()
+    elif (
+        normalized.startswith("`")
+        and normalized.endswith("`")
+        and "\n" not in normalized
+        and normalized.count("`") == 2
+    ):
+        normalized = normalized[1:-1].strip()
+    return normalized.strip()
+
+
+def _is_approval_like_intent(text: str) -> bool:
+    if not text:
+        return False
+    return bool(APPROVAL_INTENT_PATTERN.search(text) or text.upper().startswith("APPROVE"))
 
 
 def _initial_status(draft: ProductBriefDraft) -> Literal["draft", "awaiting_founder_approval"]:

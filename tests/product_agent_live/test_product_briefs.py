@@ -15,6 +15,7 @@ from ai_native_studio.product_agent_live.product_briefs import (
     ProductBriefService,
     RequestProvenance,
     canonical_content_hash,
+    classify_approval_command,
 )
 from ai_native_studio.product_agent_live.service import LiveProductAgentService
 from ai_native_studio.product_agent_live.storage import (
@@ -238,6 +239,69 @@ def test_valid_exact_version_founder_approval_is_recorded() -> None:
     assert store.get_version(created.brief.version_id).status == "approved"
 
 
+def test_inline_backtick_wrapped_command_is_accepted() -> None:
+    store = InMemoryProductBriefStore(InMemoryDocumentStore())
+    service = ProductBriefService(
+        store=store,
+        intelligence=ProductBriefIntelligence(StaticBriefModel(_draft("Scope A"))),
+    )
+    created = service.create_or_reuse(_context(), "synthetic context")
+
+    result = service.approve(
+        founder_linear_user_id="founder-1",
+        authenticated_actor_id="founder-1",
+        app_user_id="app-user-1",
+        command_text=f"`APPROVE SPEC {created.brief.version_id}`",
+        source_comment_id="comment-1",
+        now_ms=1_700_000_100_000,
+    )
+
+    assert result.status == "accepted"
+    assert store.get_version(created.brief.version_id).status == "approved"
+
+
+def test_fenced_code_wrapped_command_is_accepted() -> None:
+    store = InMemoryProductBriefStore(InMemoryDocumentStore())
+    service = ProductBriefService(
+        store=store,
+        intelligence=ProductBriefIntelligence(StaticBriefModel(_draft("Scope A"))),
+    )
+    created = service.create_or_reuse(_context(), "synthetic context")
+
+    result = service.approve(
+        founder_linear_user_id="founder-1",
+        authenticated_actor_id="founder-1",
+        app_user_id="app-user-1",
+        command_text=f"```\nAPPROVE SPEC {created.brief.version_id}\n```",
+        source_comment_id="comment-1",
+        now_ms=1_700_000_100_000,
+    )
+
+    assert result.status == "accepted"
+    assert store.get_version(created.brief.version_id).status == "approved"
+
+
+def test_surrounding_whitespace_is_accepted() -> None:
+    store = InMemoryProductBriefStore(InMemoryDocumentStore())
+    service = ProductBriefService(
+        store=store,
+        intelligence=ProductBriefIntelligence(StaticBriefModel(_draft("Scope A"))),
+    )
+    created = service.create_or_reuse(_context(), "synthetic context")
+
+    result = service.approve(
+        founder_linear_user_id="founder-1",
+        authenticated_actor_id="founder-1",
+        app_user_id="app-user-1",
+        command_text=f"  \n  APPROVE SPEC {created.brief.version_id}\n\t",
+        source_comment_id="comment-1",
+        now_ms=1_700_000_100_000,
+    )
+
+    assert result.status == "accepted"
+    assert store.get_version(created.brief.version_id).status == "approved"
+
+
 def test_wrong_user_rejection() -> None:
     result = _approval_result(
         founder_linear_user_id="founder-1",
@@ -249,6 +313,12 @@ def test_wrong_user_rejection() -> None:
 
 def test_malformed_command_rejection() -> None:
     result = _approval_result(command_text="approve spec brief-pro-3-v1")
+    assert result.status == "rejected"
+    assert result.code == "approval_command_malformed"
+
+
+def test_extra_prose_rejection() -> None:
+    result = _approval_result(command_text="Please APPROVE SPEC brief-pro-3-v1")
     assert result.status == "rejected"
     assert result.code == "approval_command_malformed"
 
@@ -446,6 +516,166 @@ def test_approval_parsing_requires_no_model_call(tmp_path: Path) -> None:
     assert product_brief_store.get_version(created.brief.version_id).status == "approved"
 
 
+def test_inline_backtick_approval_parsing_requires_no_model_call(tmp_path: Path) -> None:
+    config = _approval_service_config(tmp_path)
+    installation_store = InstallationStore(config.database_path, config.token_encryption_key)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    product_brief_store = InMemoryProductBriefStore(InMemoryDocumentStore())
+    briefs = ProductBriefService(
+        store=product_brief_store,
+        intelligence=ProductBriefIntelligence(StaticBriefModel(_draft("Scope A"))),
+    )
+    created = briefs.create_or_reuse(_context(), "synthetic context")
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        product_brief_store=product_brief_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=ExplodingModel(),
+        brief_model=ExplodingModel(),
+    )
+    payload = _approval_payload(f"`APPROVE SPEC {created.brief.version_id}`")
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_000,
+    )
+
+    assert result.status == "accepted"
+    assert "Founder approval recorded" in clients[0].activities[-1][1]["body"]
+    assert product_brief_store.get_version(created.brief.version_id).status == "approved"
+
+
+def test_fenced_code_approval_parsing_requires_no_model_call(tmp_path: Path) -> None:
+    config = _approval_service_config(tmp_path)
+    installation_store = InstallationStore(config.database_path, config.token_encryption_key)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    product_brief_store = InMemoryProductBriefStore(InMemoryDocumentStore())
+    briefs = ProductBriefService(
+        store=product_brief_store,
+        intelligence=ProductBriefIntelligence(StaticBriefModel(_draft("Scope A"))),
+    )
+    created = briefs.create_or_reuse(_context(), "synthetic context")
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        product_brief_store=product_brief_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=ExplodingModel(),
+        brief_model=ExplodingModel(),
+    )
+    payload = _approval_payload(f"```\nAPPROVE SPEC {created.brief.version_id}\n```")
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_000,
+    )
+
+    assert result.status == "accepted"
+    assert "Founder approval recorded" in clients[0].activities[-1][1]["body"]
+    assert product_brief_store.get_version(created.brief.version_id).status == "approved"
+
+
+def test_malformed_approval_intent_is_rejected_deterministically(tmp_path: Path) -> None:
+    config = _approval_service_config(tmp_path)
+    installation_store = InstallationStore(config.database_path, config.token_encryption_key)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    document_store = InMemoryDocumentStore()
+    product_brief_store = InMemoryProductBriefStore(document_store)
+    briefs = ProductBriefService(
+        store=product_brief_store,
+        intelligence=ProductBriefIntelligence(StaticBriefModel(_draft("Scope A"))),
+    )
+    created = briefs.create_or_reuse(_context(), "synthetic context")
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        product_brief_store=product_brief_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=ExplodingModel(),
+        brief_model=ExplodingModel(),
+    )
+    payload = _approval_payload("`APPROVE SPEC brief-pro-3-v1` please")
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_000,
+    )
+
+    assert result.status == "accepted"
+    assert "Approval was rejected." in clients[0].activities[-1][1]["body"]
+    assert "exact syntax `APPROVE SPEC <version_id>`" in clients[0].activities[-1][1]["body"]
+    stored = product_brief_store.get_version(created.brief.version_id)
+    assert stored.status == "awaiting_founder_approval"
+    assert product_brief_store.get_approval("approval-1") is None
+    assert len(product_brief_store.list_versions(created.brief.brief_id)) == 1
+
+
+def test_classify_approval_command_rejects_multiple_commands() -> None:
+    result = classify_approval_command(
+        "APPROVE SPEC brief-pro-3-v6\nAPPROVE SPEC brief-pro-3-v6"
+    )
+
+    assert result.kind == "invalid"
+
+
 def test_provenance_is_excluded_from_specification_content_hash() -> None:
     first = _context()
     second = ProductBriefContext(
@@ -492,3 +722,65 @@ def _approval_result(
         source_comment_id="comment-1",
         now_ms=1_700_000_100_000,
     )
+
+
+def _approval_service_config(tmp_path: Path) -> LiveProductAgentConfig:
+    return LiveProductAgentConfig(
+        app_env="test",
+        log_level="INFO",
+        public_base_url="https://product-agent.example.run.app",
+        storage_backend="sqlite",
+        oauth_client_id="client-123",
+        oauth_client_secret="secret-123",
+        webhook_secret="webhook-secret",
+        token_encryption_key="test-key-123",
+        database_path=tmp_path / "live.sqlite3",
+        firestore_project_id=None,
+        firestore_database_id="(default)",
+        firestore_collection_prefix="product_agent_live",
+        callback_path="/oauth/linear/callback",
+        webhook_path="/webhooks/linear",
+        health_path="/health",
+        linear_authorize_url="https://linear.app/oauth/authorize",
+        linear_token_url="https://api.linear.app/oauth/token",
+        linear_graphql_url="https://api.linear.app/graphql",
+        install_scopes=("read", "write", "comments:create"),
+        expected_team_name="Product Studio",
+        external_url_label="Open ProductAgent",
+        model_provider="fake",
+        openai_model="gpt-5.4-mini",
+        openai_api_key_env_var="OPENAI_API_KEY",
+        openai_timeout_seconds=20,
+        openai_max_retries=2,
+        openai_max_output_tokens=1800,
+        founder_linear_user_id="founder-1",
+    )
+
+
+def _approval_payload(command_text: str) -> dict[str, object]:
+    return {
+        "type": "AgentSessionEvent",
+        "action": "created",
+        "webhookId": "hook-approval-1",
+        "webhookTimestamp": 1_700_000_000_000,
+        "oauthClientId": "client-123",
+        "appUserId": "app-user-1",
+        "agentSession": {
+            "id": "session-1",
+            "issue": {
+                "id": "issue-1",
+                "identifier": "PRO-3",
+                "title": "Email Agent MVP discussion",
+                "description": "Prior discussion.",
+                "teamId": "team-1",
+                "organizationId": "workspace-1",
+            },
+            "comment": {
+                "id": "comment-1",
+                "body": command_text,
+                "userId": "founder-1",
+            },
+            "promptContext": "Synthetic prompt context",
+            "guidance": ["Use the founder-led product contract."],
+        },
+    }
