@@ -300,11 +300,13 @@ class FirestoreWebhookReceiptStore:
         if created:
             return ReceiptResult.NEW
         existing = self._document_store.get_document(self._collection, webhook_id)
-        if existing and existing["payload_sha256"] == payload_sha256:
+        if existing:
             status = str(existing.get("status", "reserved"))
             age_ms = received_at_ms - int(existing["received_at_ms"])
             if status == "completed" or age_ms <= 5 * 60 * 1000:
-                return ReceiptResult.DUPLICATE
+                if existing["payload_sha256"] == payload_sha256:
+                    return ReceiptResult.DUPLICATE
+                return ReceiptResult.CONFLICT
             self._document_store.set_document(
                 self._collection,
                 webhook_id,

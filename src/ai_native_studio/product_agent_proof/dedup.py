@@ -71,11 +71,13 @@ class WebhookReceiptStore:
                     (webhook_id,),
                 ).fetchone()
 
-            if row and row[0] == payload_sha256:
+            if row:
                 status = str(row[2] or "reserved")
                 age_ms = received_at_ms - int(row[1])
                 if status == "completed" or age_ms <= stale_after_ms:
-                    return ReceiptResult.DUPLICATE
+                    if row[0] == payload_sha256:
+                        return ReceiptResult.DUPLICATE
+                    return ReceiptResult.CONFLICT
                 self._connection.execute(
                     """
                     UPDATE webhook_receipts

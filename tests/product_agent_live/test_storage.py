@@ -114,6 +114,22 @@ def test_firestore_legacy_stale_receipt_can_be_reclaimed() -> None:
     assert store.reserve("hook-1", "payload-a", 1_700_000_600_001) is ReceiptResult.NEW
 
 
+def test_firestore_legacy_stale_receipt_can_be_reclaimed_after_payload_change() -> None:
+    backend = {
+        ("product_agent_live_webhook_receipts", "hook-1"): {
+            "webhook_id": "hook-1",
+            "payload_sha256": "payload-a",
+            "received_at_ms": 1_700_000_000_000,
+        }
+    }
+    store = FirestoreWebhookReceiptStore(
+        InMemoryDocumentStore(backend),
+        collection="product_agent_live_webhook_receipts",
+    )
+
+    assert store.reserve("hook-1", "payload-b", 1_700_000_600_001) is ReceiptResult.NEW
+
+
 def test_firestore_approval_ledger_survives_reinstantiation() -> None:
     backend: dict[tuple[str, str], dict[str, object]] = {}
     role = load_product_agent_role()

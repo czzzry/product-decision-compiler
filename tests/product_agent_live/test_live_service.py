@@ -558,6 +558,67 @@ def test_webhook_recovers_legacy_stale_receipt_for_exact_retry_event(tmp_path: P
     receipt_store.close()
 
 
+def test_webhook_recovers_legacy_stale_receipt_when_payload_shape_changes(
+    tmp_path: Path,
+) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    body = json.dumps(second_retry_event_payload()).encode("utf-8")
+    receipt_store = FirestoreWebhookReceiptStore(
+        InMemoryDocumentStore(
+            {
+                ("product_agent_live_webhook_receipts", "62485b93-8902-4c54-825e-771aae306ccf"): {
+                    "webhook_id": "62485b93-8902-4c54-825e-771aae306ccf",
+                    "payload_sha256": (
+                        "79ba83c7e1084e4e2c3b9d298b6bd8c6570bd11fffc9614a3a1669997475b826"
+                    ),
+                    "received_at_ms": 1_781_558_354_576,
+                }
+            }
+        ),
+        collection="product_agent_live_webhook_receipts",
+    )
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=DeterministicFakeProductModel(),
+        timestamp_tolerance_seconds=2_000,
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_781_559_293_510,
+    )
+
+    assert result.status == "accepted"
+    assert clients
+    assert clients[0].activities[0][0] == "b2c859d1-cd12-465d-9e47-f5f07321f26e"
+    installation_store.close()
+    receipt_store.close()
+
+
 def test_webhook_refreshes_token_after_auth_failure(tmp_path: Path) -> None:
     live_config = config(tmp_path)
     installation_store = InstallationStore(
