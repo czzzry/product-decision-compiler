@@ -11,6 +11,11 @@ from ai_native_studio.product_agent_proof.dedup import ReceiptResult, WebhookRec
 
 from .config import LiveProductAgentConfig
 from .models import StoredInstallation
+from .product_briefs import (
+    ProductBriefApprovalRecord,
+    ProductBriefStoreProtocol,
+    ProductBriefVersion,
+)
 from .tokens import InstallationStore, _normalize_fernet_key
 
 if TYPE_CHECKING:
@@ -70,6 +75,59 @@ class DocumentStoreProtocol(Protocol):
     def list_documents(self, collection: str) -> list[dict[str, Any]]: ...
 
     def close(self) -> None: ...
+
+
+class InMemoryProductBriefStore:
+    def __init__(
+        self,
+        document_store: DocumentStoreProtocol | None = None,
+        *,
+        collection_prefix: str = "product_agent_live",
+    ) -> None:
+        self._document_store = document_store or InMemoryDocumentStore()
+        self._versions_collection = f"{collection_prefix}_product_brief_versions"
+        self._approvals_collection = f"{collection_prefix}_product_brief_approvals"
+
+    def get_version(self, version_id: str) -> ProductBriefVersion | None:
+        payload = self._document_store.get_document(self._versions_collection, version_id)
+        return None if payload is None else ProductBriefVersion.model_validate(payload)
+
+    def list_versions(self, brief_id: str) -> list[ProductBriefVersion]:
+        payloads = self._document_store.list_documents(self._versions_collection)
+        versions = [
+            ProductBriefVersion.model_validate(payload)
+            for payload in payloads
+            if payload.get("brief_id") == brief_id
+        ]
+        return sorted(versions, key=lambda version: version.version)
+
+    def create_version(self, brief: ProductBriefVersion) -> bool:
+        return self._document_store.create_document(
+            self._versions_collection,
+            brief.version_id,
+            brief.model_dump(),
+        )
+
+    def save_version(self, brief: ProductBriefVersion) -> None:
+        self._document_store.set_document(
+            self._versions_collection,
+            brief.version_id,
+            brief.model_dump(),
+        )
+
+    def create_approval(self, record: ProductBriefApprovalRecord) -> bool:
+        return self._document_store.create_document(
+            self._approvals_collection,
+            record.approval_id,
+            record.model_dump(),
+        )
+
+    def get_approval(self, approval_id: str) -> ProductBriefApprovalRecord | None:
+        payload = self._document_store.get_document(self._approvals_collection, approval_id)
+        return None if payload is None else ProductBriefApprovalRecord.model_validate(payload)
+
+    def close(self) -> None:
+        self._document_store.close()
 
 
 class InMemoryDocumentStore:
@@ -359,6 +417,16 @@ class FirestoreApprovalLedger:
         return [SyntheticApprovalRecord.model_validate(payload) for payload in payloads]
 
 
+class FirestoreProductBriefStore(InMemoryProductBriefStore):
+    def __init__(
+        self,
+        document_store: DocumentStoreProtocol,
+        *,
+        collection_prefix: str,
+    ) -> None:
+        super().__init__(document_store, collection_prefix=collection_prefix)
+
+
 def build_installation_store(config: LiveProductAgentConfig) -> InstallationStoreProtocol:
     if config.storage_backend == "firestore":
         return FirestoreInstallationStore(
@@ -382,3 +450,15 @@ def build_receipt_store(config: LiveProductAgentConfig) -> ReceiptStoreProtocol:
             collection=f"{config.firestore_collection_prefix}_webhook_receipts",
         )
     return WebhookReceiptStore(config.database_path)
+
+
+def build_product_brief_store(config: LiveProductAgentConfig) -> ProductBriefStoreProtocol:
+    if config.storage_backend == "firestore":
+        return FirestoreProductBriefStore(
+            FirestoreDocumentStore(
+                project_id=config.firestore_project_id,
+                database_id=config.firestore_database_id,
+            ),
+            collection_prefix=config.firestore_collection_prefix,
+        )
+    return InMemoryProductBriefStore(collection_prefix=config.firestore_collection_prefix)

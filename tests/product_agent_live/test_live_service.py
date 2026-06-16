@@ -491,6 +491,36 @@ def test_webhook_emits_thought_and_response(tmp_path: Path) -> None:
     receipt_store.close()
 
 
+def test_webhook_creates_versioned_product_brief_on_explicit_request(tmp_path: Path) -> None:
+    service, installation_store, receipt_store, clients = service_fixture(tmp_path)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    payload = event_payload()
+    payload["agentSession"]["issue"]["teamId"] = "team-1"
+    payload["agentSession"]["issue"]["organizationId"] = "workspace-1"
+    payload["agentSession"]["comment"]["body"] = (
+        "@ProductAgent Create a versioned Product Brief from the current Email Agent discussion."
+    )
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_000,
+    )
+
+    assert result.status == "accepted"
+    assert clients
+    assert "created a versioned Product Brief" in clients[0].activities[1][1]["body"]
+    assert "APPROVE SPEC brief-pst-1-v1" in clients[0].activities[1][1]["body"]
+
+
 def test_webhook_publishes_safe_response_when_provider_fails(tmp_path: Path, caplog) -> None:
     live_config = config(tmp_path)
     installation_store = InstallationStore(

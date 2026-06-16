@@ -146,6 +146,58 @@ class LinearGraphQLClient:
             },
         )
 
+    def fetch_comment_author_id(self, comment_id: str) -> str | None:
+        data = self.request(
+            """
+            query CommentAuthor($id: String!) {
+              comment(id: $id) {
+                id
+                user {
+                  id
+                }
+              }
+            }
+            """,
+            {"id": comment_id},
+        )
+        comment = data.get("comment")
+        if not isinstance(comment, dict):
+            return None
+        user = comment.get("user")
+        if not isinstance(user, dict):
+            return None
+        user_id = user.get("id")
+        return str(user_id) if user_id else None
+
+    def fetch_issue_metadata(self, issue_id: str) -> dict[str, str | None]:
+        data = self.request(
+            """
+            query IssueMetadata($id: String!) {
+              organization {
+                id
+              }
+              issue(id: $id) {
+                id
+                team {
+                  id
+                }
+              }
+            }
+            """,
+            {"id": issue_id},
+        )
+        organization = data.get("organization")
+        issue = data.get("issue")
+        team = issue.get("team") if isinstance(issue, dict) else None
+        return {
+            "workspace_id": (
+                str(organization.get("id"))
+                if isinstance(organization, dict) and organization.get("id")
+                else None
+            ),
+            "team_id": str(team.get("id")) if isinstance(team, dict) and team.get("id") else None,
+        }
+
     def request(self, query: str, variables: dict[str, object]) -> dict[str, object]:
         payload = json.dumps({"query": query, "variables": variables}).encode("utf-8")
         request = urllib.request.Request(

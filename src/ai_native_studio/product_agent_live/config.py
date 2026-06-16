@@ -53,6 +53,7 @@ class LiveProductAgentConfig:
     openai_timeout_seconds: int
     openai_max_retries: int
     openai_max_output_tokens: int
+    founder_linear_user_id: str | None = None
     app_user_id: str | None = None
 
     @property
@@ -191,5 +192,6 @@ def load_live_config() -> LiveProductAgentConfig:
         openai_timeout_seconds=_int("PRODUCT_AGENT_OPENAI_TIMEOUT_SECONDS", 20),
         openai_max_retries=_int("PRODUCT_AGENT_OPENAI_MAX_RETRIES", 2),
         openai_max_output_tokens=_int("PRODUCT_AGENT_OPENAI_MAX_OUTPUT_TOKENS", 1800),
+        founder_linear_user_id=os.environ.get("PRODUCT_AGENT_FOUNDER_LINEAR_USER_ID") or None,
         app_user_id=os.environ.get("PRODUCT_AGENT_APP_USER_ID") or None,
     )

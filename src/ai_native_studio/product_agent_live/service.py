@@ -33,10 +33,27 @@ from .logging_utils import log_event
 from .models import (
     HealthCheckResult,
     LiveAgentSessionEvent,
+    LiveLinearComment,
+    LiveLinearIssue,
     OAuthCallbackResult,
     WebhookProcessResult,
 )
-from .storage import InstallationStoreProtocol, ReceiptStoreProtocol
+from .product_briefs import (
+    DeterministicFakeProductBriefModel,
+    ProductBriefContext,
+    ProductBriefIntelligence,
+    ProductBriefService,
+    format_approval_response,
+    format_product_brief_response,
+    parse_approval_command,
+    requests_product_brief,
+)
+from .storage import (
+    InMemoryProductBriefStore,
+    InstallationStoreProtocol,
+    ProductBriefStoreProtocol,
+    ReceiptStoreProtocol,
+)
 
 GraphClientFactory = Callable[[str], LinearGraphQLClient]
 REQUIRED_LINEAR_WRITE_SCOPE = "write"
@@ -49,22 +66,37 @@ class LiveProductAgentService:
         *,
         receipt_store: ReceiptStoreProtocol,
         installation_store: InstallationStoreProtocol,
+        product_brief_store: ProductBriefStoreProtocol | None = None,
         oauth_client: LinearOAuthClient,
         graph_client_factory: GraphClientFactory,
         model: ProductAdvisoryModel | None = None,
+        brief_model=None,
         timestamp_tolerance_seconds: int = 60,
     ) -> None:
         self._config = config
         self._receipt_store = receipt_store
         self._installation_store = installation_store
+        self._product_brief_store = product_brief_store or InMemoryProductBriefStore()
         self._oauth_client = oauth_client
         self._graph_client_factory = graph_client_factory
         self._timestamp_tolerance_seconds = timestamp_tolerance_seconds
         self._role = load_product_agent_role()
         self._model = model
+        self._brief_model = brief_model or DeterministicFakeProductBriefModel()
         self._policy = ProductAgentPolicy(self._role, model)
+        self._product_briefs = ProductBriefService(
+            store=self._product_brief_store,
+            intelligence=ProductBriefIntelligence(self._brief_model),
+        )
         self._model_provider = getattr(model, "provider_name", config.configured_model_provider)
         self._model_name = getattr(model, "model_name", config.configured_model_name)
+        if config.founder_linear_user_id and not self._installation_store.get_metadata(
+            "founder_linear_user_id"
+        ):
+            self._installation_store.set_metadata(
+                "founder_linear_user_id",
+                config.founder_linear_user_id,
+            )
 
     def health_check(self) -> HealthCheckResult:
         if (
@@ -261,45 +293,11 @@ class LiveProductAgentService:
                 event.agent_session.id,
                 {
                     "type": "thought",
-                    "body": (
-                        "ProductAgent is reviewing the request against the "
-                        "founder-led role contract."
-                    ),
+                    "body": self._thought_message(event),
                 },
                 ephemeral=True,
             )
-            synthetic_event = self._synthetic_event(event)
-            started_at = time.monotonic()
-            try:
-                response = self._policy.evaluate(synthetic_event)
-            except IntelligenceError as error:
-                latency_ms = int((time.monotonic() - started_at) * 1000)
-                self._publish_provider_failure(client, event.agent_session.id)
-                log_event(
-                    "provider_response_failed",
-                    session_id=event.agent_session.id,
-                    provider=self._model_provider,
-                    model=self._model_name,
-                    latency_ms=latency_ms,
-                    error_category=self._provider_error_category(error),
-                )
-                return
-            usage = response.advisory_result.model_usage
-            log_event(
-                "provider_response_completed",
-                session_id=event.agent_session.id,
-                provider=usage.provider,
-                model=usage.model,
-                latency_ms=int((time.monotonic() - started_at) * 1000),
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                total_tokens=usage.total_tokens,
-                estimated_cost_usd=usage.estimated_cost_usd,
-            )
-            client.create_agent_activity(
-                event.agent_session.id,
-                {"type": "response", "body": format_response(response)},
-            )
+            self._publish_session_response(client, event)
         except LinearAuthError:
             refreshed = self._oauth_client.refresh(installation.refresh_token)
             self._installation_store.save_installation(refreshed)
@@ -308,42 +306,91 @@ class LiveProductAgentService:
                 event.agent_session.id,
                 {
                     "type": "thought",
-                    "body": ("ProductAgent resumed after refreshing its Linear token."),
+                    "body": self._thought_message(event, refreshed=True),
                 },
                 ephemeral=True,
             )
-            synthetic_event = self._synthetic_event(event)
+            self._publish_session_response(retry_client, event)
+
+    def _publish_session_response(
+        self,
+        client: LinearGraphQLClient,
+        event: LiveAgentSessionEvent,
+    ) -> None:
+        command_text = self._comment_text(event)
+        if parse_approval_command(command_text) is not None:
+            result = self._product_briefs.approve(
+                founder_linear_user_id=self._founder_linear_user_id(),
+                authenticated_actor_id=self._resolve_authenticated_actor_id(event, client),
+                app_user_id=event.app_user_id,
+                command_text=command_text,
+                source_comment_id=(
+                    event.agent_session.comment.id if event.agent_session.comment else ""
+                ),
+                now_ms=event.webhook_timestamp,
+            )
+            client.create_agent_activity(
+                event.agent_session.id,
+                {"type": "response", "body": format_approval_response(result)},
+            )
+            return
+        if requests_product_brief(command_text):
             started_at = time.monotonic()
             try:
-                response = self._policy.evaluate(synthetic_event)
+                result = self._product_briefs.create_or_reuse(
+                    self._brief_context(event, client),
+                    self._collect_live_context(event),
+                )
             except IntelligenceError as error:
                 latency_ms = int((time.monotonic() - started_at) * 1000)
-                self._publish_provider_failure(retry_client, event.agent_session.id)
+                self._publish_provider_failure(client, event.agent_session.id)
                 log_event(
                     "provider_response_failed",
                     session_id=event.agent_session.id,
-                    provider=self._model_provider,
-                    model=self._model_name,
+                    provider=getattr(self._brief_model, "provider_name", self._model_provider),
+                    model=getattr(self._brief_model, "model_name", self._model_name),
                     latency_ms=latency_ms,
                     error_category=self._provider_error_category(error),
                 )
                 return
-            usage = response.advisory_result.model_usage
-            log_event(
-                "provider_response_completed",
-                session_id=event.agent_session.id,
-                provider=usage.provider,
-                model=usage.model,
-                latency_ms=int((time.monotonic() - started_at) * 1000),
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                total_tokens=usage.total_tokens,
-                estimated_cost_usd=usage.estimated_cost_usd,
-            )
-            retry_client.create_agent_activity(
+            client.create_agent_activity(
                 event.agent_session.id,
-                {"type": "response", "body": format_response(response)},
+                {"type": "response", "body": format_product_brief_response(result)},
             )
+            return
+
+        synthetic_event = self._synthetic_event(event)
+        started_at = time.monotonic()
+        try:
+            response = self._policy.evaluate(synthetic_event)
+        except IntelligenceError as error:
+            latency_ms = int((time.monotonic() - started_at) * 1000)
+            self._publish_provider_failure(client, event.agent_session.id)
+            log_event(
+                "provider_response_failed",
+                session_id=event.agent_session.id,
+                provider=self._model_provider,
+                model=self._model_name,
+                latency_ms=latency_ms,
+                error_category=self._provider_error_category(error),
+            )
+            return
+        usage = response.advisory_result.model_usage
+        log_event(
+            "provider_response_completed",
+            session_id=event.agent_session.id,
+            provider=usage.provider,
+            model=usage.model,
+            latency_ms=int((time.monotonic() - started_at) * 1000),
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            total_tokens=usage.total_tokens,
+            estimated_cost_usd=usage.estimated_cost_usd,
+        )
+        client.create_agent_activity(
+            event.agent_session.id,
+            {"type": "response", "body": format_response(response)},
+        )
 
     @staticmethod
     def _synthetic_event(event: LiveAgentSessionEvent):
@@ -392,6 +439,12 @@ class LiveProductAgentService:
         expected = name.lower()
         return next((value for key, value in headers.items() if key.lower() == expected), None)
 
+    def _founder_linear_user_id(self) -> str | None:
+        return (
+            self._installation_store.get_metadata("founder_linear_user_id")
+            or self._config.founder_linear_user_id
+        )
+
     def _installation_has_required_scope(self) -> bool:
         installation = self._installation_store.load_installation()
         return installation is not None and REQUIRED_LINEAR_WRITE_SCOPE in installation.scope
@@ -425,6 +478,130 @@ class LiveProductAgentService:
         if isinstance(error, ProviderRuntimeError):
             return error.category
         return "invalid_structured_output"
+
+    def _resolve_authenticated_actor_id(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+    ) -> str:
+        comment = event.agent_session.comment
+        if comment is None:
+            return ""
+        local = self._extract_actor_id_from_comment(comment)
+        if local:
+            return local
+        if not hasattr(client, "fetch_comment_author_id"):
+            raise LinearAPIError("Could not resolve the Linear user ID for the approval comment.")
+        actor_id = client.fetch_comment_author_id(comment.id)
+        if actor_id:
+            return actor_id
+        raise LinearAPIError("Could not resolve the Linear user ID for the approval comment.")
+
+    def _brief_context(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+    ) -> ProductBriefContext:
+        workspace_id = self._extract_issue_metadata_value(
+            event.agent_session.issue,
+            "organizationId",
+        )
+        workspace_id = workspace_id or self._extract_issue_metadata_value(
+            event.agent_session.issue,
+            ("organization", "id"),
+        )
+        team_id = self._extract_issue_metadata_value(event.agent_session.issue, "teamId")
+        team_id = team_id or self._extract_issue_metadata_value(
+            event.agent_session.issue,
+            ("team", "id"),
+        )
+        if not workspace_id or not team_id:
+            metadata = client.fetch_issue_metadata(event.agent_session.issue.id)
+            workspace_id = workspace_id or metadata.get("workspace_id")
+            team_id = team_id or metadata.get("team_id")
+        if not workspace_id or not team_id:
+            raise LinearAPIError(
+                "ProductAgent could not determine the Linear workspace and team IDs for this issue."
+            )
+        return ProductBriefContext(
+            source_linear_workspace_id=workspace_id,
+            source_linear_team_id=team_id,
+            source_linear_issue_id=event.agent_session.issue.id,
+            source_linear_issue_identifier=event.agent_session.issue.identifier,
+            creator_id=event.app_user_id,
+            created_at_ms=event.webhook_timestamp,
+        )
+
+    @staticmethod
+    def _extract_actor_id_from_comment(comment: LiveLinearComment) -> str | None:
+        for path in ("userId", ("user", "id"), "actorId", "creatorId"):
+            value = LiveProductAgentService._extract_metadata_value(comment, path)
+            if value:
+                return value
+        return None
+
+    @staticmethod
+    def _extract_issue_metadata_value(issue: LiveLinearIssue, *path) -> str | None:
+        return LiveProductAgentService._extract_metadata_value(issue, *path)
+
+    @staticmethod
+    def _extract_metadata_value(model, *path) -> str | None:
+        payload = model.model_dump()
+        payload.update(getattr(model, "model_extra", None) or {})
+        if len(path) == 1 and isinstance(path[0], tuple):
+            return LiveProductAgentService._extract_nested(payload, path[0])
+        current = payload
+        for part in path:
+            if not isinstance(current, dict) or part not in current:
+                return None
+            current = current[part]
+        return str(current) if current else None
+
+    @staticmethod
+    def _extract_nested(payload: dict[str, object], path: tuple[str, ...]) -> str | None:
+        current: object = payload
+        for part in path:
+            if not isinstance(current, dict):
+                return None
+            current = current.get(part)
+        return str(current) if current else None
+
+    @staticmethod
+    def _comment_text(event: LiveAgentSessionEvent) -> str:
+        session = event.agent_session
+        if session.comment and session.comment.body.strip():
+            return session.comment.body.strip()
+        if event.action == "prompted" and event.agent_activity is not None:
+            return event.agent_activity.body.strip()
+        return ""
+
+    @staticmethod
+    def _collect_live_context(event: LiveAgentSessionEvent) -> str:
+        session = event.agent_session
+        parts = [session.issue.title, session.issue.description, session.prompt_context]
+        if session.comment:
+            parts.append(session.comment.body)
+        parts.extend(str(item) for item in session.guidance)
+        parts.extend(comment.body for comment in session.previous_comments if comment.body)
+        return "\n".join(part for part in parts if part)
+
+    def _thought_message(self, event: LiveAgentSessionEvent, refreshed: bool = False) -> str:
+        prefix = "ProductAgent resumed after refreshing its Linear token. " if refreshed else ""
+        command_text = self._comment_text(event)
+        if parse_approval_command(command_text):
+            return (
+                prefix
+                + "ProductAgent is validating the Founder approval command deterministically."
+            )
+        if requests_product_brief(command_text):
+            return (
+                prefix
+                + "ProductAgent is creating a versioned Product Brief from this discussion."
+            )
+        return (
+            prefix
+            + "ProductAgent is reviewing the request against the founder-led role contract."
+        )
 
     @staticmethod
     def _reject(code: str, reason: str, http_status: int) -> WebhookProcessResult:
