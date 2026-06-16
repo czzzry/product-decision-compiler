@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 from ai_native_studio.product_agent_live.models import StoredInstallation
+from ai_native_studio.product_agent_live.product_briefs import (
+    CreatorIdentity,
+    ProductBriefApprovalRecord,
+    ProductBriefVersion,
+)
 from ai_native_studio.product_agent_live.storage import (
     FirestoreApprovalLedger,
     FirestoreInstallationStore,
+    FirestoreProductBriefStore,
     FirestoreWebhookReceiptStore,
     InMemoryDocumentStore,
 )
@@ -161,3 +167,57 @@ def test_firestore_approval_ledger_survives_reinstantiation() -> None:
 
     assert len(second_ledger.records) == 1
     assert second_ledger.records[0].approval_id == result.record.approval_id
+
+
+def test_firestore_product_brief_store_survives_reinstantiation() -> None:
+    backend: dict[tuple[str, str], dict[str, object]] = {}
+    first = FirestoreProductBriefStore(
+        InMemoryDocumentStore(backend),
+        collection_prefix="product_agent_live",
+    )
+    brief = ProductBriefVersion(
+        brief_id="brief-pro-3",
+        version=1,
+        version_id="brief-pro-3-v1",
+        content_hash="a" * 64,
+        source_linear_workspace_id="workspace-1",
+        source_linear_team_id="team-1",
+        source_linear_issue_id="issue-1",
+        title="Email Agent Product Brief",
+        problem_statement="Need an exact approved product brief before implementation.",
+        target_user="Founder operator",
+        desired_outcome="Approve one bounded product specification.",
+        assumptions=["Approval is required before implementation."],
+        risks=["Scope may still be too broad."],
+        smallest_useful_scope=["One stored product brief version."],
+        explicit_non_goals=["No implementation."],
+        measurable_exit_criteria=["The brief can be approved exactly once."],
+        open_questions=["Which edge case matters most first?"],
+        product_agent_recommendations=["Keep the first version narrow."],
+        status="awaiting_founder_approval",
+        created_at_ms=1_700_000_000_000,
+        creator_identity=CreatorIdentity(type="product_agent_app", id="app-user-1"),
+    )
+    assert first.create_version(brief)
+    assert first.create_approval(
+        ProductBriefApprovalRecord(
+            approval_id="approval-1",
+            founder_linear_user_id="founder-1",
+            product_brief_version_id="brief-pro-3-v1",
+            content_hash="a" * 64,
+            source_issue_id="issue-1",
+            source_event_comment_id="comment-1",
+            approved_at_ms=1_700_000_100_000,
+        )
+    )
+    first.close()
+
+    second = FirestoreProductBriefStore(
+        InMemoryDocumentStore(backend),
+        collection_prefix="product_agent_live",
+    )
+
+    assert second.get_version("brief-pro-3-v1") is not None
+    assert second.get_version("brief-pro-3-v1").title == "Email Agent Product Brief"
+    assert second.get_approval("approval-1") is not None
+    assert second.get_approval("approval-1").founder_linear_user_id == "founder-1"
