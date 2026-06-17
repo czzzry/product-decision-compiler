@@ -558,6 +558,28 @@ class LiveProductAgentService:
 
         session = event.agent_session
         comment_body = command.exact_current_instruction
+        prompt_context = session.prompt_context
+        live_comment = session.comment
+        synthetic_comment = None
+        if live_comment is not None:
+            synthetic_comment = LinearComment(
+                id=live_comment.id,
+                body=live_comment.body,
+            )
+        if comment_body and comment_body.strip():
+            prompt_context = "\n".join(
+                part
+                for part in (
+                    session.prompt_context,
+                    f"Resolved current human request: {comment_body}",
+                )
+                if part
+            )
+        if synthetic_comment is None and comment_body:
+            synthetic_comment = LinearComment(
+                id=command.source_comment_id or command.source_event_id,
+                body=comment_body,
+            )
         return AgentSessionEvent(
             type="AgentSessionEvent",
             action=event.action,
@@ -573,27 +595,16 @@ class LiveProductAgentService:
                     title=session.issue.title,
                     description=session.issue.description,
                 ),
-                comment=(
-                    LinearComment(
-                        id=(
-                            command.source_comment_id
-                            or command.source_agent_activity_id
-                            or session.id
-                        ),
-                        body=comment_body,
-                    )
-                    if comment_body
-                    else None
-                ),
-                promptContext=session.prompt_context,
+                comment=synthetic_comment,
+                promptContext=prompt_context,
                 guidance=[str(item) for item in session.guidance],
                 previousComments=[
                     LinearComment(
-                        id=comment.id,
-                        body=comment.body,
+                        id=previous_comment.id,
+                        body=previous_comment.body,
                     )
-                    for comment in session.previous_comments
-                    if comment.body
+                    for previous_comment in session.previous_comments
+                    if previous_comment.body
                 ],
                 repositoryContent=[],
             ),
@@ -761,6 +772,16 @@ class LiveProductAgentService:
                 instruction = comment.body.strip()
                 source_type = "comment"
                 source_comment_id = comment.id
+                if self._looks_like_thread_starter(instruction) or self._looks_like_boilerplate(
+                    instruction
+                ):
+                    resolved_activity = self._resolve_live_human_activity(event, client)
+                    if resolved_activity is not None:
+                        instruction = self._activity_instruction(resolved_activity)
+                        if instruction:
+                            source_comment_id = self._source_activity_id(resolved_activity)
+                            source_type = "comment"
+                            actor_id = self._actor_from_activity(resolved_activity) or actor_id
                 if self._looks_like_thread_starter(instruction):
                     latest_previous = self._latest_previous_human_comment(
                         session.previous_comments,
@@ -869,6 +890,23 @@ class LiveProductAgentService:
     def _looks_like_thread_starter(text: str) -> bool:
         normalized = " ".join(text.split()).lower()
         return normalized == "this thread is for an agent session with productagent."
+
+    @staticmethod
+    def _looks_like_boilerplate(text: str) -> bool:
+        normalized = " ".join(text.split()).lower()
+        return normalized.startswith("request received") or (
+            "clarifying questions" in normalized and "approved decisions" in normalized
+        )
+
+    def _resolve_live_human_activity(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+    ) -> object | None:
+        try:
+            return self._resolve_prompted_activity(event, client)
+        except CommandResolutionError:
+            return None
 
     @staticmethod
     def _latest_previous_human_comment(

@@ -174,9 +174,21 @@ def service_fixture(tmp_path: Path):
     )
     receipt_store = WebhookReceiptStore()
     clients: list[RecordingGraphClient] = []
+    session_activities = [
+        {
+            "id": "activity-user-followup-1",
+            "type": "comment",
+            "body": (
+                "@ProductAgent : see this thread and my responses to your questions. "
+                "Answer me back and dont just repeat what you've been doing"
+            ),
+            "user": {"id": "founder-1"},
+            "createdAt": "2026-06-17T13:08:35Z",
+        }
+    ]
 
     def factory(access_token: str) -> RecordingGraphClient:
-        client = RecordingGraphClient(access_token)
+        client = RecordingGraphClient(access_token, session_activities=session_activities)
         clients.append(client)
         return client
 
@@ -237,6 +249,14 @@ class RecordingAdvisoryModel(DeterministicFakeProductModel):
     def generate(self, request):
         self.requests.append(request)
         return super().generate(request)
+
+
+class RejectingAdvisoryModel:
+    provider_name = "fake"
+    model_name = "rejecting-advisory-model"
+
+    def generate(self, request):
+        raise AssertionError("ProductAgent should not call the model for this follow-up.")
 
 
 class CrashModel:
@@ -314,7 +334,7 @@ def test_begin_installation_builds_app_authorize_url(tmp_path: Path) -> None:
     receipt_store.close()
 
 
-def test_advisory_follow_up_includes_previous_comments_in_model_input(tmp_path: Path) -> None:
+def test_advisory_follow_up_synthesizes_direct_v1_plan_from_answers(tmp_path: Path) -> None:
     live_config = config(tmp_path)
     installation_store = InstallationStore(
         live_config.database_path,
@@ -330,13 +350,25 @@ def test_advisory_follow_up_includes_previous_comments_in_model_input(tmp_path: 
     )
     receipt_store = WebhookReceiptStore()
     clients: list[RecordingGraphClient] = []
+    session_activities = [
+        {
+            "id": "activity-user-followup-2",
+            "type": "comment",
+            "body": (
+                "@ProductAgent : see this thread and my responses to your questions. "
+                "Answer me back and dont just repeat what you've been doing"
+            ),
+            "user": {"id": "founder-1"},
+            "createdAt": "2026-06-17T13:08:35Z",
+        }
+    ]
 
     def factory(access_token: str) -> RecordingGraphClient:
-        client = RecordingGraphClient(access_token)
+        client = RecordingGraphClient(access_token, session_activities=session_activities)
         clients.append(client)
         return client
 
-    model = RecordingAdvisoryModel()
+    model = RejectingAdvisoryModel()
     service = LiveProductAgentService(
         live_config,
         receipt_store=receipt_store,
@@ -366,13 +398,14 @@ def test_advisory_follow_up_includes_previous_comments_in_model_input(tmp_path: 
     )
 
     assert result.status == "accepted"
-    assert model.requests
-    assert model.requests[0].untrusted_product_input.startswith(
-        "Latest human request to answer now:\n"
-        "Triage, label, categorize, and review the risky items."
-    )
-    assert "Earlier thread comments for context only:" in model.requests[0].untrusted_product_input
     assert len(clients[0].activities) >= 1
+    response_body = clients[0].activities[-1][1]["body"]
+    assert response_body.startswith(
+        "You asked me to answer back based on the thread and your clarifying answers."
+    )
+    assert "Build a single Gmail inbox triage workflow" in response_body
+    assert "without granting send or delete authority" in response_body
+    assert "No autonomous sending or replying in v1." in response_body
     installation_store.close()
     receipt_store.close()
 
@@ -393,13 +426,40 @@ def test_advisory_follow_up_ignores_app_authored_previous_comments(tmp_path: Pat
     )
     receipt_store = WebhookReceiptStore()
     clients: list[RecordingGraphClient] = []
+    first_session_activities = [
+        {
+            "id": "activity-user-followup-3a",
+            "type": "comment",
+            "body": (
+                "Turn my answers into a 3-bullet v1 plan: one workflow, explicit exclusions, "
+                "and what to defer. No questions."
+            ),
+            "user": {"id": "founder-1"},
+            "createdAt": "2026-06-17T13:08:35Z",
+        }
+    ]
+    second_session_activities = [
+        {
+            "id": "activity-user-followup-3b",
+            "type": "comment",
+            "body": (
+                "Use my answers only and draft one narrow v1 plan with explicit exclusions. "
+                "No checklist, no repeated clarifying questions."
+            ),
+            "user": {"id": "founder-1"},
+            "createdAt": "2026-06-17T13:08:36Z",
+        }
+    ]
 
     def factory(access_token: str) -> RecordingGraphClient:
-        client = RecordingGraphClient(access_token)
+        session_activities = (
+            first_session_activities if not clients else second_session_activities
+        )
+        client = RecordingGraphClient(access_token, session_activities=session_activities)
         clients.append(client)
         return client
 
-    model = RecordingAdvisoryModel()
+    model = RejectingAdvisoryModel()
     service = LiveProductAgentService(
         live_config,
         receipt_store=receipt_store,
@@ -434,10 +494,13 @@ def test_advisory_follow_up_ignores_app_authored_previous_comments(tmp_path: Pat
     )
 
     assert result.status == "accepted"
-    assert model.requests
-    assert model.requests[0].untrusted_product_input.startswith(
-        "Latest human request to answer now:\nUser: please give me the smallest useful v1."
+    response_body = clients[0].activities[-1][1]["body"]
+    assert response_body.startswith(
+        "You asked me to answer back based on the thread and your clarifying answers."
     )
+    assert "Build a single Gmail inbox triage workflow" in response_body
+    assert "review bucket" in response_body.lower()
+    assert "delete permissions" in response_body.lower()
     installation_store.close()
     receipt_store.close()
 
@@ -466,7 +529,7 @@ def test_advisory_follow_up_with_same_source_ids_but_new_instruction_does_not_re
         clients.append(client)
         return client
 
-    model = RecordingAdvisoryModel()
+    model = RejectingAdvisoryModel()
     service = LiveProductAgentService(
         live_config,
         receipt_store=receipt_store,
@@ -521,8 +584,8 @@ def test_advisory_follow_up_with_same_source_ids_but_new_instruction_does_not_re
 
     assert first.status == "accepted"
     assert second.status == "accepted"
-    assert len(model.requests) == 2
-    assert model.requests[0].untrusted_product_input != model.requests[1].untrusted_product_input
+    assert len(clients) == 2
+    assert clients[0].activities[-1][1]["body"] != clients[1].activities[-1][1]["body"]
     installation_store.close()
     receipt_store.close()
 

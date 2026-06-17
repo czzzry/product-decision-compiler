@@ -7,6 +7,9 @@ from ai_native_studio.product_agent_proof.models import ProductAgentResponse
 
 
 def format_response(response: ProductAgentResponse, provenance: RequestProvenance) -> str:
+    if response.advisory_result.model_usage.model == "follow-up-synthesizer-v1":
+        return _format_follow_up_response(response, provenance)
+
     request_block = [
         "Request received",
         _visible_request_text(provenance),
@@ -32,6 +35,55 @@ def format_response(response: ProductAgentResponse, provenance: RequestProvenanc
 
     lines.extend(["", "**Approved decisions**"])
     lines.extend(f"- {item}" for item in response.approved_decisions)
+
+    non_goals = response.advisory_result.advisory.explicit_non_goals
+    if non_goals:
+        lines.extend(["", "**What I'm deferring**"])
+        lines.extend(f"- {item}" for item in non_goals)
+
+    lines.extend(
+        [
+            "",
+            "**Founder Briefing**",
+            f"1. Objective: {response.founder_briefing.objective}",
+            f"2. What was done: {response.founder_briefing.what_was_done}",
+            f"3. What changed: {response.founder_briefing.what_changed}",
+            "4. Important decisions and why: "
+            + response.founder_briefing.important_decisions_and_why,
+            "5. Validation or checks performed: "
+            + response.founder_briefing.validation_or_checks_performed,
+            "6. Remaining risks, assumptions, or unresolved questions: "
+            + response.founder_briefing.remaining_risks_assumptions_or_questions,
+            "7. Founder approval required: " + response.founder_briefing.founder_approval_required,
+            "8. Recommended next action: " + response.founder_briefing.recommended_next_action,
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _format_follow_up_response(
+    response: ProductAgentResponse,
+    provenance: RequestProvenance,
+) -> str:
+    lines = [
+        "You asked me to answer back based on the thread and your clarifying answers.",
+        "Here is the narrow v1 I would start with.",
+        "",
+        "**Plan**",
+    ]
+    lines.extend(f"- {item}" for item in response.recommendations)
+
+    if response.refused_actions:
+        lines.extend(["", "**Refused actions**"])
+        lines.extend(f"- {item}" for item in response.refused_actions)
+
+    lines.extend(["", "**Approved decisions**"])
+    lines.extend(f"- {item}" for item in response.approved_decisions)
+
+    non_goals = response.advisory_result.advisory.explicit_non_goals
+    if non_goals:
+        lines.extend(["", "**What I'm deferring**"])
+        lines.extend(f"- {item}" for item in non_goals)
 
     lines.extend(
         [
