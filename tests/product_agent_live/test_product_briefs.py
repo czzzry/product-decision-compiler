@@ -25,7 +25,6 @@ from ai_native_studio.product_agent_live.storage import (
 )
 from ai_native_studio.product_agent_live.tokens import InstallationStore
 from ai_native_studio.product_agent_proof.dedup import WebhookReceiptStore
-from ai_native_studio.product_agent_proof.providers import DeterministicFakeProductModel
 from ai_native_studio.product_agent_proof.security import create_signature
 
 
@@ -55,16 +54,6 @@ class ExplodingModel:
     def generate(self, request):
         del request
         raise AssertionError("model should not be called")
-
-
-class CountingAdvisoryModel:
-    def __init__(self) -> None:
-        self.calls = 0
-        self._delegate = DeterministicFakeProductModel()
-
-    def generate(self, request):
-        self.calls += 1
-        return self._delegate.generate(request)
 
 
 class StubOAuthClient:
@@ -844,6 +833,83 @@ def test_prompted_follow_up_comment_creates_product_brief_without_lookup(tmp_pat
     receipt_store.close()
 
 
+def test_prompted_follow_up_comment_with_history_creates_product_brief_without_lookup(
+    tmp_path: Path,
+) -> None:
+    config = _approval_service_config(tmp_path)
+    installation_store = InstallationStore(config.database_path, config.token_encryption_key)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    product_brief_store = InMemoryProductBriefStore(InMemoryDocumentStore())
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(
+            access_token,
+            session_activities=[
+                {
+                    "id": "activity-root-1",
+                    "type": "comment",
+                    "body": "This thread is for an agent session with productagent.",
+                    "user": {"id": "e4f2b296-ad04-4259-88fb-ce4db8b7340e"},
+                    "createdAt": "2026-06-17T04:28:20Z",
+                }
+            ],
+        )
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        product_brief_store=product_brief_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=ExplodingModel(),
+        brief_model=StaticBriefModel(_draft("Scope A")),
+    )
+    payload = _event_payload()
+    payload["action"] = "prompted"
+    payload["webhookId"] = "hook-brief-follow-up-history-1"
+    payload["agentSession"]["comment"]["id"] = "comment-brief-follow-up-history-1"
+    payload["agentSession"]["comment"]["userId"] = "e4f2b296-ad04-4259-88fb-ce4db8b7340e"
+    payload["agentSession"]["comment"]["body"] = "can you give me the specs?"
+    payload["agentSession"]["previousComments"] = [
+        {
+            "id": "comment-previous-1",
+            "body": "An earlier prompt in the same thread.",
+            "userId": "e4f2b296-ad04-4259-88fb-ce4db8b7340e",
+        }
+    ]
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_006,
+    )
+
+    assert result.status == "accepted"
+    assert clients[0].session_activity_fetches == 0
+    assert len(product_brief_store.list_versions("brief-pro-3")) == 1
+    stored = product_brief_store.get_version("brief-pro-3-v1")
+    assert stored is not None
+    assert stored.status == "awaiting_founder_approval"
+    assert "Version: `brief-pro-3-v1`" in clients[0].activities[-1][1]["body"]
+    assert "Content hash:" in clients[0].activities[-1][1]["body"]
+    assert "Approval command:" in clients[0].activities[-1][1]["body"]
+    installation_store.close()
+    receipt_store.close()
+
+
 def test_prompted_follow_up_uses_current_session_prompt_when_thread_has_history(
     tmp_path: Path,
 ) -> None:
@@ -859,7 +925,6 @@ def test_prompted_follow_up_uses_current_session_prompt_when_thread_has_history(
     )
     receipt_store = WebhookReceiptStore()
     product_brief_store = InMemoryProductBriefStore(InMemoryDocumentStore())
-    advisory_model = CountingAdvisoryModel()
     clients: list[RecordingGraphClient] = []
 
     def factory(access_token: str) -> RecordingGraphClient:
@@ -894,17 +959,20 @@ def test_prompted_follow_up_uses_current_session_prompt_when_thread_has_history(
         product_brief_store=product_brief_store,
         oauth_client=StubOAuthClient(),
         graph_client_factory=factory,
-        model=advisory_model,
+        model=ExplodingModel(),
         brief_model=StaticBriefModel(_draft("Scope A")),
     )
+    briefs = ProductBriefService(
+        store=product_brief_store,
+        intelligence=ProductBriefIntelligence(StaticBriefModel(_draft("Scope A"))),
+    )
+    created = briefs.create_or_reuse(_context(), "synthetic context")
     payload = _event_payload()
     payload["action"] = "prompted"
     payload["webhookId"] = "hook-brief-follow-up-2"
-    payload["agentSession"]["comment"] = {
-        "id": "comment-root-1",
-        "body": "This thread is for an agent session with productagent.",
-        "userId": "e4f2b296-ad04-4259-88fb-ce4db8b7340e",
-    }
+    payload["agentSession"]["comment"]["id"] = "comment-root-1"
+    payload["agentSession"]["comment"]["body"] = "what do I reference in order to approve?"
+    payload["agentSession"]["comment"]["userId"] = "e4f2b296-ad04-4259-88fb-ce4db8b7340e"
     payload["agentSession"]["previousComments"] = [
         {
             "id": "comment-previous-1",
@@ -921,13 +989,14 @@ def test_prompted_follow_up_uses_current_session_prompt_when_thread_has_history(
     )
 
     assert result.status == "accepted"
-    assert clients[0].session_activity_fetches == 1
-    assert advisory_model.calls == 0
+    assert clients[0].session_activity_fetches == 0
     assert len(product_brief_store.list_versions("brief-pro-3")) == 1
-    stored = product_brief_store.get_version("brief-pro-3-v1")
+    stored = product_brief_store.get_version(created.brief.version_id)
     assert stored is not None
     assert stored.status == "awaiting_founder_approval"
-    assert "created a versioned Product Brief" in clients[0].activities[-1][1]["body"]
+    assert "Version: `brief-pro-3-v1`" in clients[0].activities[-1][1]["body"]
+    assert "Content hash:" in clients[0].activities[-1][1]["body"]
+    assert "Approval command:" in clients[0].activities[-1][1]["body"]
     installation_store.close()
     receipt_store.close()
 
@@ -970,6 +1039,9 @@ def test_prompted_event_missing_current_prompt_fails_closed_without_using_stale_
 def test_requests_product_brief_accepts_spec_follow_up_question() -> None:
     assert requests_product_brief("what spec do you have for this?")
     assert requests_product_brief("@ProductAgent what spec do you have for this?")
+    assert requests_product_brief("can you give me the specs?")
+    assert requests_product_brief("what do I reference in order to approve?")
+    assert requests_product_brief("what do I approve?")
 
 
 def test_inline_backtick_approval_parsing_requires_no_model_call(tmp_path: Path) -> None:

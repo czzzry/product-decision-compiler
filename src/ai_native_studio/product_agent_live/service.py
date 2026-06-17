@@ -800,7 +800,7 @@ class LiveProductAgentService:
                 activity_typename=self._activity_kind(inline_activity),
             )
 
-        if comment is not None and not session.previous_comments:
+        if comment is not None:
             comment_instruction = comment.body.strip()
             if comment_instruction:
                 return CommandEnvelope(
