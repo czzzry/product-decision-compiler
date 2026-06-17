@@ -21,6 +21,15 @@ PRODUCT_BRIEF_REQUEST_PATTERNS = (
     re.compile(r"(?is)\bcreate\b.*\bversioned\b.*\bproduct brief\b"),
     re.compile(r"(?is)\bwhat\s+spec\s+do you have\s+for\s+(?:this|it)\b"),
     re.compile(r"(?is)\bwhat(?:'s| is)?\s+the\s+spec\b"),
+    re.compile(r"(?is)\bcan you give me the specs?\b"),
+    re.compile(r"(?is)\bgive me the specs?\b"),
+    re.compile(r"(?is)\bwhat do i reference in order to approve\b"),
+    re.compile(r"(?is)\bwhat do i reference\b"),
+    re.compile(r"(?is)\bwhat do i approve\b"),
+    re.compile(r"(?is)\bapproval command\b"),
+    re.compile(r"(?is)\bversioned\s+product\s+brief\b"),
+    re.compile(r"(?is)\bversioned\s+brief\b"),
+    re.compile(r"(?is)\bcreate a spec\b"),
 )
 APPROVAL_COMMAND_PATTERN = re.compile(r"^APPROVE SPEC ([A-Za-z0-9._-]+)$")
 APPROVAL_FENCED_CODE_PATTERN = re.compile(
