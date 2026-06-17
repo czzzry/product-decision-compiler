@@ -58,6 +58,13 @@ The studio constitution is defined. Phase 2A provides an executable ProductAgent
 Phase 2A.5 adds a local product-advisory intelligence layer, evaluation set, and synthetic Founder
 approval proof. Both phases use synthetic data only.
 
+## ProductAgent MVP v0.1
+
+ProductAgent MVP v0.1 has passed the live smoke acceptance test. See:
+
+- [Internal milestone note](docs/milestones/product-agent-v0.1.md)
+- [Public-facing case study draft](docs/public/product-agent-v0.1-public.md)
+
 Run the complete demonstration after creating the local environment:
 
 ```bash
