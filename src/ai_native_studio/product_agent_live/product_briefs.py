@@ -35,6 +35,7 @@ APPROVAL_COMMAND_PATTERN = re.compile(r"^APPROVE SPEC ([A-Za-z0-9._-]+)$")
 APPROVAL_FENCED_CODE_PATTERN = re.compile(
     r"(?s)^```(?:[A-Za-z0-9_-]+)?[ \t]*\n(?P<body>.*?)\n```$"
 )
+APPROVAL_LEADING_MENTION_PATTERN = re.compile(r"(?is)^@productagent\b[ \t]*")
 APPROVAL_INTENT_PATTERN = re.compile(r"\bapprove\s+spec\b", re.IGNORECASE)
 
 
@@ -882,17 +883,19 @@ def _normalize_list(values: list[str]) -> list[str]:
 
 def _normalize_approval_command_text(text: str) -> str:
     normalized = text.strip()
-    fenced = APPROVAL_FENCED_CODE_PATTERN.fullmatch(normalized)
-    if fenced is not None:
-        normalized = fenced.group("body").strip()
-    elif (
-        normalized.startswith("`")
-        and normalized.endswith("`")
-        and "\n" not in normalized
-        and normalized.count("`") == 2
-    ):
-        normalized = normalized[1:-1].strip()
+    normalized = _unwrap_full_message_code(normalized)
+    normalized = APPROVAL_LEADING_MENTION_PATTERN.sub("", normalized, count=1).strip()
+    normalized = _unwrap_full_message_code(normalized)
     return normalized.strip()
+
+
+def _unwrap_full_message_code(text: str) -> str:
+    fenced = APPROVAL_FENCED_CODE_PATTERN.fullmatch(text)
+    if fenced is not None:
+        return fenced.group("body").strip()
+    if text.startswith("`") and text.endswith("`") and "\n" not in text and text.count("`") == 2:
+        return text[1:-1].strip()
+    return text
 
 
 def _is_approval_like_intent(text: str) -> bool:
