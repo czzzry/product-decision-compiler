@@ -213,7 +213,6 @@ class LinearGraphQLClient:
                     user {
                       id
                     }
-                    signals
                   }
                 }
               }

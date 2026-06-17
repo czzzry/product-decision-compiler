@@ -864,6 +864,9 @@ class LiveProductAgentService:
         body = LiveProductAgentService._activity_body(activity).strip().lower()
         if body == "stop":
             signals.append("stop")
+        activity_type = LiveProductAgentService._activity_kind(activity)
+        if activity_type and activity_type.strip().lower() == "stop":
+            signals.append("stop")
         return tuple(dict.fromkeys(signals))
 
     @staticmethod

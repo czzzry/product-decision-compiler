@@ -820,7 +820,6 @@ def test_stop_signal_prevents_model_call_and_duplicate_stop_is_idempotent(tmp_pa
         "id": "activity-stop-1",
         "type": "prompt",
         "body": "stop",
-        "signals": ["stop"],
         "user": {"id": "founder-1"},
     }
     body = json.dumps(payload).encode("utf-8")
