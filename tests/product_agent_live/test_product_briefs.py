@@ -16,6 +16,7 @@ from ai_native_studio.product_agent_live.product_briefs import (
     RequestProvenance,
     canonical_content_hash,
     classify_approval_command,
+    parse_approval_command,
     requests_product_brief,
 )
 from ai_native_studio.product_agent_live.service import LiveProductAgentService
@@ -1091,6 +1092,72 @@ def test_inline_backtick_approval_parsing_requires_no_model_call(tmp_path: Path)
     assert result.status == "accepted"
     assert "Founder approval recorded" in clients[0].activities[-1][1]["body"]
     assert product_brief_store.get_version(created.brief.version_id).status == "approved"
+
+
+def test_approval_with_leading_product_agent_mention_and_code_wrapper_requires_no_model_call(
+    tmp_path: Path,
+) -> None:
+    config = _approval_service_config(tmp_path)
+    installation_store = InstallationStore(config.database_path, config.token_encryption_key)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    product_brief_store = InMemoryProductBriefStore(InMemoryDocumentStore())
+    briefs = ProductBriefService(
+        store=product_brief_store,
+        intelligence=ProductBriefIntelligence(StaticBriefModel(_draft("Scope A"))),
+    )
+    created = briefs.create_or_reuse(_context(), "synthetic context")
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        product_brief_store=product_brief_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=ExplodingModel(),
+        brief_model=ExplodingModel(),
+    )
+    payload = _approval_payload(f"@productagent `APPROVE SPEC {created.brief.version_id}`")
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_000,
+    )
+
+    assert result.status == "accepted"
+    assert "Founder approval recorded" in clients[0].activities[-1][1]["body"]
+    assert product_brief_store.get_version(created.brief.version_id).status == "approved"
+    assert len(product_brief_store.list_versions(created.brief.brief_id)) == 1
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_approval_parsing_accepts_captured_live_mention_wrapped_shape() -> None:
+    captured = "@productagent `APPROVE SPEC brief-pro-9-v2`"
+
+    assert parse_approval_command(captured) == "brief-pro-9-v2"
+    assert classify_approval_command(captured).kind == "exact"
+
+
+def test_approval_parsing_accepts_leading_product_agent_mention() -> None:
+    assert parse_approval_command("@ProductAgent APPROVE SPEC brief-pro-9-v2") == "brief-pro-9-v2"
+    assert parse_approval_command("@productagent APPROVE SPEC brief-pro-9-v2") == "brief-pro-9-v2"
 
 
 def test_fenced_code_approval_parsing_requires_no_model_call(tmp_path: Path) -> None:
