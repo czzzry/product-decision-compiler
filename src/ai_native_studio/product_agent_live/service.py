@@ -371,6 +371,11 @@ class LiveProductAgentService:
             live_agent_activity = event.agent_activity
             live_prompt_context = event.agent_session.prompt_context
             live_issue_comment = self._latest_issue_human_comment(event, client)
+            live_agent_activity_keys = (
+                ",".join(sorted(self._extract_raw_metadata(live_agent_activity).keys()))
+                if live_agent_activity is not None
+                else None
+            )
             log_event(
                 "conversation_turn_resolved",
                 session_id=event.agent_session.id,
@@ -399,6 +404,7 @@ class LiveProductAgentService:
                     if self._activity_instruction(live_agent_activity)
                     else None
                 ),
+                live_agent_activity_keys=live_agent_activity_keys,
                 live_prompt_context_sha256=(
                     hashlib.sha256(
                         " ".join(live_prompt_context.split()).encode("utf-8")
