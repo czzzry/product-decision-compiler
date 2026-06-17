@@ -772,6 +772,28 @@ class LiveProductAgentService:
                 activity_typename=None,
             )
 
+        if comment is not None:
+            comment_instruction = comment.body.strip()
+            if comment_instruction and (
+                classify_approval_command(comment_instruction).kind != "none"
+                or comment_instruction.lower() == "stop"
+            ):
+                return CommandEnvelope(
+                    webhook_action=event.action,
+                    agent_session_id=session.id,
+                    actor_linear_user_id=(
+                        self._extract_actor_id_from_comment(comment) or event.app_user_id
+                    ),
+                    source_type="comment",
+                    exact_current_instruction=comment_instruction,
+                    source_agent_activity_id=None,
+                    source_comment_id=comment.id,
+                    source_event_id=self._source_event_id(event),
+                    received_at_ms=event.webhook_timestamp,
+                    signals=self._activity_signals(comment),
+                    activity_typename=self._activity_kind(comment),
+                )
+
         activity = self._resolve_prompted_activity(event, client)
         activity_kind = self._activity_kind(activity)
         if not self._is_user_generated_activity(activity_kind):
