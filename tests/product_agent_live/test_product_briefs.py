@@ -70,6 +70,7 @@ class RecordingGraphClient:
         self.access_token = access_token
         self.activities: list[tuple[str, dict[str, object], bool]] = []
         self.session_activities = list(session_activities or [])
+        self.session_activity_fetches = 0
 
     def create_agent_activity(
         self,
@@ -82,6 +83,7 @@ class RecordingGraphClient:
 
     def fetch_agent_session_activities(self, session_id: str) -> list[dict[str, object]]:
         assert session_id
+        self.session_activity_fetches += 1
         return list(self.session_activities)
 
 
@@ -674,6 +676,104 @@ def test_prompted_event_queries_session_activities_when_inline_activity_is_missi
         "founder follow-up."
     )
     assert "created a versioned Product Brief" in clients[0].activities[1][1]["body"]
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_prompted_exact_approval_comment_bypasses_session_activity_lookup(
+    tmp_path: Path,
+) -> None:
+    config = _approval_service_config(tmp_path)
+    installation_store = InstallationStore(config.database_path, config.token_encryption_key)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    product_brief_store = InMemoryProductBriefStore(InMemoryDocumentStore())
+    briefs = ProductBriefService(
+        store=product_brief_store,
+        intelligence=ProductBriefIntelligence(StaticBriefModel(_draft("Scope A"))),
+    )
+    created = briefs.create_or_reuse(_context(), "synthetic context")
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token, session_activities=[{"body": "unused"}])
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        product_brief_store=product_brief_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=ExplodingModel(),
+        brief_model=ExplodingModel(),
+    )
+    payload = _event_payload()
+    payload["action"] = "prompted"
+    payload["webhookId"] = "hook-approval-comment-1"
+    payload.pop("agentActivity", None)
+    payload["agentSession"]["comment"]["id"] = "comment-approval-1"
+    payload["agentSession"]["comment"]["userId"] = "founder-1"
+    payload["agentSession"]["comment"]["body"] = f"APPROVE SPEC {created.brief.version_id}"
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_005,
+    )
+
+    assert result.status == "accepted"
+    assert clients[0].session_activity_fetches == 0
+    assert "Founder approval recorded" in clients[0].activities[-1][1]["body"]
+    assert created.brief.version_id in clients[0].activities[-1][1]["body"]
+    assert product_brief_store.get_version(created.brief.version_id).status == "approved"
+    assert len(product_brief_store.list_versions(created.brief.brief_id)) == 1
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_prompted_stop_comment_bypasses_session_activity_lookup(tmp_path: Path) -> None:
+    service, installation_store, receipt_store, clients = _service_fixture_with_activities(
+        tmp_path,
+        [{"id": "unused", "body": "approve spec brief-pro-3-v1"}],
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    payload = _event_payload()
+    payload["action"] = "prompted"
+    payload["webhookId"] = "hook-stop-comment-1"
+    payload.pop("agentActivity", None)
+    payload["agentSession"]["comment"]["id"] = "comment-stop-1"
+    payload["agentSession"]["comment"]["userId"] = "founder-1"
+    payload["agentSession"]["comment"]["body"] = "stop"
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_006,
+    )
+
+    assert result.status == "accepted"
+    assert clients[0].session_activity_fetches == 0
+    assert "stop signal" in clients[0].activities[-1][1]["body"]
+    assert "No OpenAI call was started" in clients[0].activities[-1][1]["body"]
     installation_store.close()
     receipt_store.close()
 
