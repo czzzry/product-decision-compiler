@@ -33,6 +33,27 @@ PRODUCT_BRIEF_REQUEST_PATTERNS = (
     re.compile(r"(?is)\bversioned\s+product\s+brief\b"),
     re.compile(r"(?is)\bversioned\s+brief\b"),
     re.compile(r"(?is)\bcreate a spec\b"),
+    re.compile(r"(?is)\bturn this into an approvable brief\b"),
+    re.compile(r"(?is)\bapprovable brief\b"),
+)
+SCOPE_PROPOSAL_REQUEST_PATTERNS = (
+    re.compile(r"(?is)\bpropose\b.*\bscope\b"),
+    re.compile(r"(?is)\bscope\b.*\bproposal\b"),
+    re.compile(r"(?is)\bwhat scope can i approve\b"),
+    re.compile(r"(?is)\bwhat should we build\b"),
+    re.compile(r"(?is)\bwhat(?:'s| is)\s+the\s+scope\b"),
+    re.compile(r"(?is)\bcan you scope this\b"),
+    re.compile(r"(?is)\bscope this\b"),
+    re.compile(r"(?is)\bdesign a scope\b"),
+)
+MILESTONE_REPORT_REQUEST_PATTERNS = (
+    re.compile(r"(?is)\bmilestone report\b"),
+    re.compile(r"(?is)\bstatus report\b"),
+    re.compile(r"(?is)\bdeployment summary\b"),
+    re.compile(r"(?is)\btest summary\b"),
+    re.compile(r"(?is)\bprogress summary\b"),
+    re.compile(r"(?is)\breport back\b"),
+    re.compile(r"(?is)\bwhat happened\b"),
 )
 APPROVAL_COMMAND_PATTERN = re.compile(r"^APPROVE SPEC ([A-Za-z0-9._-]+)$")
 APPROVAL_FENCED_CODE_PATTERN = re.compile(
@@ -739,6 +760,16 @@ class ProductBriefService:
 def requests_product_brief(text: str) -> bool:
     normalized = _normalize_text(text)
     return any(pattern.search(normalized) for pattern in PRODUCT_BRIEF_REQUEST_PATTERNS)
+
+
+def requests_scope_proposal(text: str) -> bool:
+    normalized = _normalize_text(text)
+    return any(pattern.search(normalized) for pattern in SCOPE_PROPOSAL_REQUEST_PATTERNS)
+
+
+def requests_milestone_report(text: str) -> bool:
+    normalized = _normalize_text(text)
+    return any(pattern.search(normalized) for pattern in MILESTONE_REPORT_REQUEST_PATTERNS)
 
 
 def classify_approval_command(text: str) -> ApprovalCommandClassification:

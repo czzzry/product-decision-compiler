@@ -17,7 +17,9 @@ from ai_native_studio.product_agent_live.product_briefs import (
     canonical_content_hash,
     classify_approval_command,
     parse_approval_command,
+    requests_milestone_report,
     requests_product_brief,
+    requests_scope_proposal,
 )
 from ai_native_studio.product_agent_live.service import LiveProductAgentService
 from ai_native_studio.product_agent_live.storage import (
@@ -1053,6 +1055,19 @@ def test_requests_product_brief_accepts_spec_follow_up_question() -> None:
     assert requests_product_brief("what do I reference in order to approve?")
     assert requests_product_brief("what do I approve?")
     assert requests_product_brief("can you decide and give me a spec")
+    assert requests_product_brief("turn this into an approvable brief")
+
+
+def test_requests_scope_proposal_accepts_scope_requests() -> None:
+    assert requests_scope_proposal("can you scope this?")
+    assert requests_scope_proposal("what scope can I approve?")
+    assert requests_scope_proposal("please propose the scope for the first slice")
+
+
+def test_requests_milestone_report_accepts_report_requests() -> None:
+    assert requests_milestone_report("give me a milestone report")
+    assert requests_milestone_report("status report please")
+    assert requests_milestone_report("deployment summary for the live service")
 
 
 def test_decision_ledger_overrides_generic_brief_questions() -> None:

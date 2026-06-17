@@ -20,6 +20,9 @@ from ai_native_studio.product_agent_live.storage import (
     InMemoryRequestProvenanceStore,
 )
 from ai_native_studio.product_agent_live.tokens import InstallationStore
+from ai_native_studio.product_agent_proof.conversation_state import (
+    build_conversation_decision_ledger,
+)
 from ai_native_studio.product_agent_proof.dedup import WebhookReceiptStore
 from ai_native_studio.product_agent_proof.intelligence import IntelligenceError
 from ai_native_studio.product_agent_proof.models import (
@@ -419,9 +422,14 @@ def test_advisory_follow_up_synthesizes_direct_v1_plan_from_answers(tmp_path: Pa
     assert result.status == "accepted"
     assert len(clients[0].activities) >= 1
     response_body = clients[0].activities[-1][1]["body"]
-    assert response_body.startswith("It is mostly clear")
-    assert "repeat the earlier checklist" in response_body
-    assert "Build a single Gmail inbox triage workflow" not in response_body
+    assert response_body.startswith("Request received")
+    assert (
+        "It is clear enough to move forward from the answers already in the thread."
+        in response_body
+    )
+    assert "Target user: Founder only." in response_body
+    assert "Primary job: triage, label, categorize, and handle spam/unsubscribe." in response_body
+    assert "Founder Briefing" not in response_body
     installation_store.close()
     receipt_store.close()
 
@@ -516,9 +524,14 @@ def test_advisory_follow_up_ignores_app_authored_previous_comments(tmp_path: Pat
 
     assert result.status == "accepted"
     response_body = clients[0].activities[-1][1]["body"]
-    assert response_body.startswith("You're right.")
-    assert "follow-ups should change the response" in response_body
+    assert response_body.startswith("Request received")
+    assert (
+        "You’re right. I’m using the answers already in the thread instead of "
+        "replaying the earlier checklist."
+        in response_body
+    )
     assert "usual checklist" not in response_body
+    assert "Founder Briefing" not in response_body
     installation_store.close()
     receipt_store.close()
 
@@ -624,6 +637,8 @@ def test_advisory_follow_up_with_same_source_ids_but_new_instruction_does_not_re
     assert second.status == "accepted"
     assert len(clients) == 2
     assert clients[0].activities[-1][1]["body"] != clients[1].activities[-1][1]["body"]
+    assert "Founder Briefing" not in clients[0].activities[-1][1]["body"]
+    assert "Founder Briefing" not in clients[1].activities[-1][1]["body"]
     installation_store.close()
     receipt_store.close()
 
@@ -684,9 +699,13 @@ def test_advisory_follow_up_retries_on_exact_user_wording_without_boilerplate(
 
     assert result.status == "accepted"
     response_body = clients[0].activities[-1][1]["body"]
-    assert response_body.startswith("I’m answering the latest turn directly.")
-    assert "Request received" not in response_body
-    assert "Clarifying questions" not in response_body
+    assert response_body.startswith("Request received")
+    assert (
+        "I’m using the answers already in the thread to move the discussion "
+        "forward."
+        in response_body
+    )
+    assert "Founder Briefing" not in response_body
     installation_store.close()
     receipt_store.close()
 
@@ -755,8 +774,8 @@ def test_thread_starter_prompt_uses_latest_human_reply_in_previous_comments(
     assert result.status == "accepted"
     assert len(clients[0].activities) >= 1
     response_body = clients[0].activities[-1][1]["body"]
-    assert response_body.startswith("You're right.")
-    assert "Request received" not in response_body
+    assert response_body.startswith("Request received")
+    assert "You’re right." in response_body
     assert "clarifying questions" not in response_body.lower()
     installation_store.close()
     receipt_store.close()
@@ -850,8 +869,12 @@ def test_thread_starter_prompt_uses_latest_issue_comment_when_session_comment_is
 
     assert result.status == "accepted"
     response_body = clients[0].activities[-1][1]["body"]
-    assert response_body.startswith("You're right.")
-    assert "Request received" not in response_body
+    assert response_body.startswith("Request received")
+    assert (
+        "You’re right. I’m using the answers already in the thread instead of "
+        "replaying the earlier checklist."
+        in response_body
+    )
     installation_store.close()
     receipt_store.close()
 
@@ -919,8 +942,8 @@ def test_prompted_turn_uses_agent_activity_content_when_body_is_missing(
 
     assert result.status == "accepted"
     response_body = clients[0].activities[-1][1]["body"]
-    assert response_body.startswith("You're right.")
-    assert "Request received" not in response_body
+    assert response_body.startswith("Request received")
+    assert "You’re right." in response_body
     installation_store.close()
     receipt_store.close()
 
@@ -1065,12 +1088,23 @@ def test_multi_turn_conversation_uses_current_prompt_and_reuses_only_duplicate_t
     )
 
     assert turn1_body.startswith("Request received")
-    assert turn2_body.startswith("It is mostly clear")
-    assert turn3_body.startswith("You're right.")
+    assert (
+        "I’m using the answers already in the thread to move the discussion "
+        "forward."
+        in turn1_body
+    )
+    assert turn2_body.startswith("Request received")
+    assert (
+        "It is clear enough to move forward from the answers already in the "
+        "thread."
+        in turn2_body
+    )
+    assert turn3_body.startswith("Request received")
+    assert "You’re right." in turn3_body
     assert "Version: `brief-pst-1-v1`" in turn4_body
     assert "APPROVE SPEC brief-pst-1-v1" in turn5_body
     assert turn5_body == duplicate_turn5_body
-    assert counting_model.calls == 1
+    assert counting_model.calls == 0
     installation_store.close()
     receipt_store.close()
 
@@ -1335,6 +1369,146 @@ def test_webhook_emits_thought_and_response(tmp_path: Path) -> None:
     assert clients[0].activities[1][1]["body"].startswith(
         "Request received\n> @ProductAgent please help"
     )
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_webhook_casual_question_uses_conversation_mode_without_founder_briefing(
+    tmp_path: Path,
+) -> None:
+    service, installation_store, receipt_store, clients = service_fixture(tmp_path)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    payload = event_payload()
+    payload["agentSession"]["comment"]["body"] = "@ProductAgent what do you think?"
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_000,
+    )
+
+    assert result.status == "accepted"
+    response_body = clients[0].activities[1][1]["body"]
+    assert response_body.startswith("Request received")
+    assert (
+        "I’m answering your latest turn directly instead of replaying the "
+        "starter checklist."
+        in response_body
+    )
+    assert "Founder Briefing" not in response_body
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_webhook_scope_proposal_uses_light_structure_and_does_not_create_brief(
+    tmp_path: Path,
+) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    product_brief_store = InMemoryProductBriefStore(InMemoryDocumentStore())
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        product_brief_store=product_brief_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=RejectingAdvisoryModel(),
+    )
+    payload = event_payload()
+    payload["webhookId"] = "hook-scope-1"
+    payload["agentSession"]["comment"]["body"] = (
+        "@ProductAgent propose the smallest scope I can approve from these answers"
+    )
+    payload["agentSession"]["previousComments"] = [
+        {"id": "comment-previous-1", "body": "Just me.", "userId": "founder-1"},
+        {
+            "id": "comment-previous-2",
+            "body": "Gmail first, then ProtonMail later.",
+            "userId": "founder-1",
+        },
+        {
+            "id": "comment-previous-3",
+            "body": "Triage, label, categorize, and review risky mail.",
+            "userId": "founder-1",
+        },
+    ]
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_010,
+    )
+
+    assert result.status == "accepted"
+    response_body = clients[0].activities[1][1]["body"]
+    assert response_body.startswith("Request received")
+    assert "Goal" in response_body
+    assert "In scope" in response_body
+    assert "Out of scope" in response_body
+    assert "Recommended defaults" in response_body
+    assert "Open questions" in response_body
+    assert "Approval note" in response_body
+    assert "Founder Briefing" not in response_body
+    assert len(product_brief_store.list_versions("brief-pst-1")) == 0
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_webhook_milestone_report_uses_report_mode(tmp_path: Path) -> None:
+    service, installation_store, receipt_store, clients = service_fixture(tmp_path)
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create"),
+        )
+    )
+    payload = event_payload()
+    payload["agentSession"]["comment"]["body"] = "@ProductAgent give me a milestone report"
+    body = json.dumps(payload).encode("utf-8")
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_020,
+    )
+
+    assert result.status == "accepted"
+    response_body = clients[0].activities[1][1]["body"]
+    assert response_body.startswith("Request received")
+    assert "Milestone report" in response_body
+    assert "Deterministic routing and exact approval gating remain in place." in response_body
+    assert "Founder Briefing" not in response_body
     installation_store.close()
     receipt_store.close()
 
@@ -2082,7 +2256,7 @@ def test_webhook_refreshes_token_after_auth_failure(tmp_path: Path) -> None:
     receipt_store.close()
 
 
-def test_markdown_formatter_includes_founder_briefing() -> None:
+def test_markdown_formatter_uses_mode_specific_sections() -> None:
     response = ProductAgentPolicy(
         load_product_agent_role(),
         DeterministicFakeProductModel(),
@@ -2122,10 +2296,18 @@ def test_markdown_formatter_includes_founder_briefing() -> None:
             exact_triggering_instruction="Please help",
             received_at_ms=1,
         ),
+        mode="scope_proposal",
+        decision_ledger=build_conversation_decision_ledger(
+            [
+                "Just me. Gmail first. triage, label, categorize, and handle spam/unsubscribe.",
+            ]
+        ),
     )
 
-    assert "**Founder Briefing**" in markdown
-    assert "Approved decisions" in markdown
+    assert "Goal" in markdown
+    assert "In scope" in markdown
+    assert "Approval note" in markdown
+    assert "Founder Briefing" not in markdown
 
 
 def test_log_redaction_hides_oauth_and_token_fields() -> None:

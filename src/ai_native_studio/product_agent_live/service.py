@@ -29,7 +29,6 @@ from ai_native_studio.product_agent_proof.security import (
     verify_timestamp,
 )
 
-from .activity_format import format_response
 from .config import LiveProductAgentConfig
 from .install import begin_installation
 from .linear_api import (
@@ -57,7 +56,9 @@ from .product_briefs import (
     classify_approval_command,
     format_approval_response,
     format_product_brief_response,
+    requests_milestone_report,
     requests_product_brief,
+    requests_scope_proposal,
 )
 from .storage import (
     CommandOutcomeStoreProtocol,
@@ -616,35 +617,81 @@ class LiveProductAgentService:
                 body=self._format_brief_reference_response(event, client, turn, provenance),
             )
 
-        if turn.route_type == "conversational_follow_up":
+        response_mode = self._response_mode(turn, turn.previous_agent_response_count)
+        decision_ledger = None
+        if response_mode in {"conversation", "discovery", "scope_proposal"}:
+            decision_ledger = self._decision_ledger(
+                event,
+                client,
+                turn,
+                live_issue_comments=live_issue_comments,
+            )
+        if response_mode == "milestone_report":
             return TerminalActivity(
                 type="response",
-                body=self._format_conversational_follow_up_response(
+                body=self._format_milestone_report_response(
                     event,
                     client,
                     turn,
                     provenance,
+                    live_issue_comments=live_issue_comments,
                 ),
             )
-
-        synthetic_event = self._synthetic_event(event, turn)
-        started_at = time.monotonic()
-        response = self._policy.evaluate(synthetic_event)
-        usage = response.advisory_result.model_usage
-        log_event(
-            "provider_response_completed",
-            session_id=event.agent_session.id,
-            provider=usage.provider,
-            model=usage.model,
-            latency_ms=int((time.monotonic() - started_at) * 1000),
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            total_tokens=usage.total_tokens,
-            estimated_cost_usd=usage.estimated_cost_usd,
-        )
+        if response_mode == "scope_proposal":
+            return TerminalActivity(
+                type="response",
+                body=self._format_scope_proposal_response(
+                    event,
+                    client,
+                    turn,
+                    provenance,
+                    decision_ledger=decision_ledger,
+                ),
+            )
+        if response_mode == "discovery":
+            return TerminalActivity(
+                type="response",
+                body=self._format_discovery_response(
+                    event,
+                    client,
+                    turn,
+                    provenance,
+                    decision_ledger=decision_ledger,
+                ),
+            )
+        if response_mode == "advisory":
+            synthetic_event = self._synthetic_event(event, turn)
+            started_at = time.monotonic()
+            response = self._policy.evaluate(synthetic_event)
+            usage = response.advisory_result.model_usage
+            log_event(
+                "provider_response_completed",
+                session_id=event.agent_session.id,
+                provider=usage.provider,
+                model=usage.model,
+                latency_ms=int((time.monotonic() - started_at) * 1000),
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                total_tokens=usage.total_tokens,
+                estimated_cost_usd=usage.estimated_cost_usd,
+            )
+            return TerminalActivity(
+                type="response",
+                body=self._format_advisory_response(
+                    response,
+                    provenance,
+                    decision_ledger=decision_ledger,
+                ),
+            )
         return TerminalActivity(
             type="response",
-            body=format_response(response, provenance),
+            body=self._format_conversation_response(
+                event,
+                client,
+                turn,
+                provenance,
+                decision_ledger=decision_ledger,
+            ),
         )
 
     @staticmethod
@@ -1173,6 +1220,164 @@ class LiveProductAgentService:
         )
 
     @staticmethod
+    def _looks_like_discovery_turn(text: str) -> bool:
+        normalized = " ".join(text.split()).lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "respond based on the answers",
+                "based on the answers i gave you",
+                "answer based on",
+                "try again",
+                "answer me back",
+                "do you have any questions",
+                "is it clear",
+                "what do you need from me",
+                "clarifying answers",
+                "clarifying question",
+                "ideate",
+                "brainstorm",
+            )
+        )
+
+    @staticmethod
+    def _looks_like_advisory_prompt(text: str) -> bool:
+        normalized = " ".join(text.split()).lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "please help",
+                "help me",
+                "please advise",
+                "advise on",
+                "advice",
+                "review this request",
+                "review scope",
+                "i need help",
+            )
+        )
+
+    @staticmethod
+    def _milestone_context_lines(ledger: ConversationDecisionLedger) -> list[str]:
+        lines: list[str] = []
+        if ledger.target_user:
+            lines.append(f"- Target user: {ledger.target_user}.")
+        if ledger.initial_provider:
+            lines.append(f"- Initial provider: {ledger.initial_provider}.")
+        if ledger.primary_job:
+            lines.append(f"- Primary job: {ledger.primary_job}.")
+        if ledger.review_model:
+            lines.append(f"- Review model: {ledger.review_model}.")
+        if ledger.delete_gate:
+            lines.append(f"- Delete gate: {ledger.delete_gate}.")
+        return lines
+
+    @staticmethod
+    def _conversation_ledger_lines(
+        decision_ledger: ConversationDecisionLedger | None,
+    ) -> list[str]:
+        if decision_ledger is None:
+            return []
+        lines: list[str] = []
+        if decision_ledger.target_user:
+            lines.append(f"- Target user: {decision_ledger.target_user}.")
+        if decision_ledger.initial_provider:
+            lines.append(f"- Initial provider: {decision_ledger.initial_provider}.")
+        if decision_ledger.future_provider:
+            lines.append(f"- Future provider: {decision_ledger.future_provider}.")
+        if decision_ledger.primary_job:
+            lines.append(f"- Primary job: {decision_ledger.primary_job}.")
+        if decision_ledger.allowed_initial_permissions:
+            lines.append(
+                "- Allowed initial permissions: "
+                + ", ".join(decision_ledger.allowed_initial_permissions)
+                + "."
+            )
+        if decision_ledger.prohibited_initial_permissions:
+            lines.append(
+                "- Prohibited initial permissions: "
+                + ", ".join(decision_ledger.prohibited_initial_permissions)
+                + "."
+            )
+        if decision_ledger.review_model:
+            lines.append(f"- Review model: {decision_ledger.review_model}.")
+        if decision_ledger.delete_gate:
+            lines.append(f"- Delete gate: {decision_ledger.delete_gate}.")
+        if decision_ledger.approval_model:
+            lines.append(f"- Approval model: {decision_ledger.approval_model}.")
+        return lines
+
+    @staticmethod
+    def _conversation_recommendation_lines(
+        turn: ConversationTurn,
+        *,
+        decision_ledger: ConversationDecisionLedger | None,
+        limit: int,
+    ) -> list[str]:
+        lines: list[str] = []
+        if decision_ledger is not None:
+            if decision_ledger.primary_job:
+                lines.append(
+                    f"Keep the first slice centered on {decision_ledger.primary_job}."
+                )
+            if decision_ledger.initial_provider:
+                lines.append(
+                    "Start with "
+                    f"{decision_ledger.initial_provider} before widening provider support."
+                )
+            if decision_ledger.review_model:
+                lines.append(decision_ledger.review_model)
+            if decision_ledger.delete_gate:
+                lines.append(decision_ledger.delete_gate)
+            if decision_ledger.approval_model:
+                lines.append(decision_ledger.approval_model)
+            if decision_ledger.unresolved_questions:
+                lines.extend(decision_ledger.unresolved_questions)
+        if not lines:
+            lines.append(
+                "Use the latest human answers instead of replaying the original checklist."
+            )
+            lines.append(
+                "Ask only the next question that unlocks the decision you want to make."
+            )
+        return list(dict.fromkeys(lines))[:limit]
+
+    @staticmethod
+    def _conversation_open_questions(
+        decision_ledger: ConversationDecisionLedger | None,
+    ) -> list[str]:
+        if decision_ledger and decision_ledger.unresolved_questions:
+            return list(decision_ledger.unresolved_questions)
+        return []
+
+    @staticmethod
+    def _conversation_goal_fallback(turn: ConversationTurn) -> str:
+        normalized = " ".join(turn.exact_current_instruction.split()).lower()
+        if "what should we build" in normalized or "scope" in normalized:
+            return "Define the smallest useful scope."
+        return "Answer the latest request directly."
+
+    @staticmethod
+    def _conversation_scope_fallback(
+        *,
+        decision_ledger: ConversationDecisionLedger,
+    ) -> list[str]:
+        items = [
+            "A narrow first slice that follows the latest human answers.",
+            "Read-only or review-first behavior before any destructive action.",
+        ]
+        if decision_ledger.initial_provider:
+            items.insert(0, f"One {decision_ledger.initial_provider} workflow.")
+        return items
+
+    @staticmethod
+    def _conversation_out_of_scope_fallback() -> list[str]:
+        return [
+            "No implementation or BuilderAgent work yet.",
+            "No autonomous sending or other destructive actions in the first slice.",
+        ]
+
+    @staticmethod
     def _looks_like_thread_starter(text: str) -> bool:
         normalized = " ".join(text.split()).lower()
         return normalized == "this thread is for an agent session with productagent."
@@ -1611,54 +1816,269 @@ class LiveProductAgentService:
             lines.insert(5, "This version is awaiting authenticated Founder approval.")
         return "\n".join(lines)
 
-    def _format_conversational_follow_up_response(
+    def _response_mode(
+        self,
+        turn: ConversationTurn,
+        previous_agent_response_count: int,
+    ) -> str:
+        command_text = turn.exact_current_instruction
+        if requests_milestone_report(command_text):
+            return "milestone_report"
+        if requests_product_brief(command_text):
+            return "product_brief"
+        if requests_scope_proposal(command_text):
+            return "scope_proposal"
+        if previous_agent_response_count > 0 or self._looks_like_discovery_turn(command_text):
+            return "discovery"
+        if self._looks_like_advisory_prompt(command_text):
+            return "advisory"
+        return "conversation"
+
+    def _format_milestone_report_response(
         self,
         event: LiveAgentSessionEvent,
         client: LinearGraphQLClient,
         turn: ConversationTurn,
         provenance: RequestProvenance,
+        live_issue_comments: list[LiveLinearComment] | None = None,
     ) -> str:
-        normalized = " ".join(turn.exact_current_instruction.split()).lower()
-        brief_id = ProductBriefService._brief_id(event.agent_session.issue.identifier)
-        latest_brief = next(
-            (
-                version
-                for version in reversed(self._product_brief_store.list_versions(brief_id))
-                if version.status != "superseded"
-            ),
-            None,
+        ledger = self._decision_ledger(
+            event,
+            client,
+            turn,
+            live_issue_comments=live_issue_comments,
         )
+        lines = [
+            "Request received",
+            f"> {turn.exact_current_instruction}",
+            "",
+            "Milestone report",
+            "- Status: ProductAgent handled the latest turn without starting implementation.",
+            "- Validation: Deterministic routing and exact approval gating remain in place.",
+        ]
+        context_lines = self._milestone_context_lines(ledger)
+        if context_lines:
+            lines.extend(["", "Context", *context_lines[:4]])
+        lines.extend(
+            [
+                "",
+                "Next step",
+                "- Keep the conversation in the requested mode or ask for the exact Product Brief.",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _format_conversation_response(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+        turn: ConversationTurn,
+        provenance: RequestProvenance,
+        *,
+        decision_ledger: ConversationDecisionLedger | None,
+    ) -> str:
+        lines = [
+            "Request received",
+            self._visible_request_text(provenance),
+            "",
+            (
+                "I’m answering your latest turn directly instead of replaying "
+                "the starter checklist."
+            ),
+        ]
+        normalized = " ".join(turn.exact_current_instruction.split()).lower()
         if any(
             marker in normalized
             for marker in ("why are you repeating yourself", "repeating yourself")
         ):
-            return (
-                "You're right. I was treating the thread too much like a fresh ideation prompt "
-                "instead of a new turn.\n\n"
-                "I’m now using the latest human activity as the turn to answer, so follow-ups "
-                "should change the response instead of replaying the starter plan."
+            lines = [
+                "Request received",
+                self._visible_request_text(provenance),
+                "",
+                (
+                    "You’re right. I’m using the latest turn instead of replaying "
+                    "the starter checklist."
+                ),
+            ]
+        ledger_lines = self._conversation_ledger_lines(decision_ledger)
+        if ledger_lines:
+            lines.extend(["", "**What I understand**", *ledger_lines[:4]])
+        lines.extend(
+            [
+                "",
+                "**My current read**",
+                *self._conversation_recommendation_lines(
+                    turn,
+                    decision_ledger=decision_ledger,
+                    limit=2,
+                ),
+            ]
+        )
+        open_questions = self._conversation_open_questions(decision_ledger)
+        if open_questions:
+            lines.extend(["", "**If you want me to go deeper**"])
+            lines.extend(f"- {item}" for item in open_questions[:3])
+        return "\n".join(lines)
+
+    def _format_discovery_response(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+        turn: ConversationTurn,
+        provenance: RequestProvenance,
+        *,
+        decision_ledger: ConversationDecisionLedger | None,
+    ) -> str:
+        lines = [
+            "Request received",
+            self._visible_request_text(provenance),
+            "",
+            (
+                "I’m using the answers already in the thread to move the "
+                "discussion forward."
+            ),
+        ]
+        normalized = " ".join(turn.exact_current_instruction.split()).lower()
+        if any(
+            marker in normalized
+            for marker in ("why are you repeating yourself", "repeating yourself")
+        ):
+            lines = [
+                "Request received",
+                self._visible_request_text(provenance),
+                "",
+                (
+                    "You’re right. I’m using the answers already in the thread "
+                    "instead of replaying the earlier checklist."
+                ),
+            ]
+        elif any(
+            marker in normalized
+            for marker in ("do you have any questions", "is it clear")
+        ):
+            lines = [
+                "Request received",
+                self._visible_request_text(provenance),
+                "",
+                (
+                    "It is clear enough to move forward from the answers "
+                    "already in the thread."
+                ),
+            ]
+        ledger_lines = self._conversation_ledger_lines(decision_ledger)
+        if ledger_lines:
+            lines.extend(["", "**What I understand**", *ledger_lines[:5]])
+        lines.extend(
+            [
+                "",
+                "**What I’d explore next**",
+                *self._conversation_recommendation_lines(
+                    turn,
+                    decision_ledger=decision_ledger,
+                    limit=3,
+                ),
+            ]
+        )
+        open_questions = self._conversation_open_questions(decision_ledger)
+        if open_questions:
+            lines.extend(["", "**Open questions**"])
+            lines.extend(f"- {item}" for item in open_questions[:4])
+        return "\n".join(lines)
+
+    def _format_scope_proposal_response(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+        turn: ConversationTurn,
+        provenance: RequestProvenance,
+        *,
+        decision_ledger: ConversationDecisionLedger | None,
+    ) -> str:
+        ledger = decision_ledger or ConversationDecisionLedger()
+        lines = [
+            "Request received",
+            self._visible_request_text(provenance),
+            "",
+            "Goal",
+            f"- {ledger.primary_job or self._conversation_goal_fallback(turn)}",
+            "",
+            "In scope",
+        ]
+        in_scope = ledger.in_scope_actions or self._conversation_scope_fallback(
+            decision_ledger=ledger
+        )
+        lines.extend(f"- {item}" for item in in_scope[:4])
+        lines.extend(["", "Out of scope"])
+        out_of_scope = ledger.out_of_scope_actions or self._conversation_out_of_scope_fallback()
+        lines.extend(f"- {item}" for item in out_of_scope[:4])
+        lines.extend(["", "Recommended defaults"])
+        lines.extend(
+            f"- {item}" for item in self._conversation_recommendation_lines(
+                turn,
+                decision_ledger=ledger,
+                limit=4,
             )
-        if any(marker in normalized for marker in ("do you have any questions", "is it clear")):
-            if latest_brief is not None:
-                return (
-                    "It is clear enough to reference the current Product Brief.\n\n"
-                    f"The brief version is `{latest_brief.version_id}` with content hash "
-                    f"`{latest_brief.content_hash[:12]}`.\n"
-                    "If you want a tighter next pass, I can refine the brief from the latest "
-                    "answers instead of restating the earlier checklist."
-                )
-            return (
-                "It is mostly clear, and I do not need to repeat the earlier checklist.\n\n"
-                "If you want the next step, I can turn your answers into a versioned Product "
-                "Brief or answer a specific open question."
-            )
-        if "what spec do i approve" in normalized or "what do i reference" in normalized:
-            return self._format_brief_reference_response(event, client, turn, provenance)
+        )
+        open_questions = self._conversation_open_questions(ledger)
+        lines.extend(["", "Open questions"])
+        lines.extend(
+            f"- {item}"
+            for item in (
+                open_questions or ["No unresolved questions were surfaced yet."]
+            )[:4]
+        )
+        lines.extend(
+            [
+                "",
+                "Approval note",
+                "- This scope is advisory until the exact Product Brief version is approved.",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _format_advisory_response(
+        self,
+        response,
+        provenance: RequestProvenance,
+        *,
+        decision_ledger: ConversationDecisionLedger | None,
+    ) -> str:
+        lines = [
+            "Request received",
+            self._visible_request_text(provenance),
+            "",
+            "ProductAgent reviewed this request as advisory product work.",
+        ]
+        ledger_lines = self._conversation_ledger_lines(decision_ledger)
+        if ledger_lines:
+            lines.extend(["", "**What I understand**", *ledger_lines[:4]])
+        if response.product_questions:
+            lines.extend(["", "**Clarifying questions**"])
+            lines.extend(f"- {question}" for question in response.product_questions[:4])
+        if response.recommendations:
+            lines.extend(["", "**Recommendations**"])
+            lines.extend(f"- {item}" for item in response.recommendations[:4])
+        if response.refused_actions:
+            lines.extend(["", "**Refused actions**"])
+            lines.extend(f"- {item}" for item in response.refused_actions[:3])
+        if response.approved_decisions:
+            lines.extend(["", "**Approved decisions**"])
+            lines.extend(f"- {item}" for item in response.approved_decisions[:3])
+        if response.safety_notes:
+            lines.extend(["", "**Safety notes**"])
+            lines.extend(f"- {item}" for item in response.safety_notes[:3])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _visible_request_text(provenance: RequestProvenance, max_chars: int = 280) -> str:
+        instruction = provenance.exact_triggering_instruction.strip()
+        if provenance.source_type == "comment" or len(instruction) <= max_chars:
+            return f"> {instruction}"
+        excerpt = instruction[: max_chars - 1].rstrip() + "..."
         return (
-            "I’m answering the latest turn directly.\n\n"
-            "Your follow-up changes the context, so I am not replaying the original advisory "
-            "plan. If you want, I can turn this into a Product Brief or clarify the remaining "
-            "gaps from your answers."
+            f"> {excerpt}\n"
+            f"> Source issue: {provenance.source_linear_issue_identifier} "
+            "(full triggering text retained in application storage)"
         )
 
     def _decision_ledger(
