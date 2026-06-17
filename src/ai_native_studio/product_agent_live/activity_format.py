@@ -8,7 +8,13 @@ from ai_native_studio.product_agent_live.product_briefs import RequestProvenance
 from ai_native_studio.product_agent_proof.conversation_state import ConversationDecisionLedger
 from ai_native_studio.product_agent_proof.models import ProductAgentResponse
 
-ResponseMode = Literal["conversation", "discovery", "scope_proposal", "milestone_report"]
+ResponseMode = Literal[
+    "conversation",
+    "discovery",
+    "fresh_start",
+    "scope_proposal",
+    "milestone_report",
+]
 
 
 def format_response(
@@ -20,6 +26,8 @@ def format_response(
 ) -> str:
     if mode == "discovery":
         return _format_discovery_response(response, provenance, decision_ledger)
+    if mode == "fresh_start":
+        return _format_fresh_start_response(response, provenance)
     if mode == "scope_proposal":
         return _format_scope_proposal_response(response, provenance, decision_ledger)
     if mode == "milestone_report":
@@ -36,12 +44,12 @@ def _format_conversation_response(
         "Request received",
         _visible_request_text(provenance),
         "",
-        "I’m answering your latest turn directly instead of replaying the starter checklist.",
+        "I’m responding to your latest turn.",
     ]
     ledger_lines = _conversation_ledger_lines(response, decision_ledger)
     if ledger_lines:
         lines.extend(["", "**What I understand**", *ledger_lines])
-    lines.extend(["", "**My current read**"])
+    lines.extend(["", "**What I’m focusing on**"])
     lines.extend(f"- {item}" for item in _recommended_lines(response, limit=2))
     if response.product_questions:
         lines.extend(["", "**If you want me to go deeper**"])
@@ -58,7 +66,7 @@ def _format_discovery_response(
         "Request received",
         _visible_request_text(provenance),
         "",
-        "I’m using the answers already in the thread to move the discussion forward.",
+        "I’m using the answers already in the thread to move this forward.",
     ]
     ledger_lines = _conversation_ledger_lines(response, decision_ledger)
     if ledger_lines:
@@ -69,6 +77,32 @@ def _format_discovery_response(
     if open_questions:
         lines.extend(["", "**Open questions**"])
         lines.extend(f"- {item}" for item in open_questions[:4])
+    return "\n".join(lines)
+
+
+def _format_fresh_start_response(
+    response: ProductAgentResponse,
+    provenance: RequestProvenance,
+) -> str:
+    lines = [
+        "Request received",
+        _visible_request_text(provenance),
+        "",
+        "Fresh start",
+        "- I’m starting from this request only and ignoring earlier thread assumptions.",
+    ]
+    if response.recommendations:
+        lines.extend(["", "**Fresh ideas**"])
+        lines.extend(f"- {item}" for item in response.recommendations[:4])
+    if response.product_questions:
+        lines.extend(["", "**Questions to answer next**"])
+        lines.extend(f"- {item}" for item in response.product_questions[:4])
+    if response.refused_actions:
+        lines.extend(["", "**Guardrails**"])
+        lines.extend(f"- {item}" for item in response.refused_actions[:3])
+    if response.safety_notes:
+        lines.extend(["", "**Safety notes**"])
+        lines.extend(f"- {item}" for item in response.safety_notes[:3])
     return "\n".join(lines)
 
 

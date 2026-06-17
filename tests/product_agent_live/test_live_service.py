@@ -525,11 +525,7 @@ def test_advisory_follow_up_ignores_app_authored_previous_comments(tmp_path: Pat
     assert result.status == "accepted"
     response_body = clients[0].activities[-1][1]["body"]
     assert response_body.startswith("Request received")
-    assert (
-        "You’re right. I’m using the answers already in the thread instead of "
-        "replaying the earlier checklist."
-        in response_body
-    )
+    assert "You’re right. I’m using the answers already in the thread." in response_body
     assert "usual checklist" not in response_body
     assert "Founder Briefing" not in response_body
     installation_store.close()
@@ -700,11 +696,99 @@ def test_advisory_follow_up_retries_on_exact_user_wording_without_boilerplate(
     assert result.status == "accepted"
     response_body = clients[0].activities[-1][1]["body"]
     assert response_body.startswith("Request received")
-    assert (
-        "I’m using the answers already in the thread to move the discussion "
-        "forward."
-        in response_body
+    assert "I’m using the answers already in the thread to move this forward." in response_body
+    assert "Founder Briefing" not in response_body
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_fresh_start_ignores_stale_issue_context_and_skips_ledger_fetch(
+    tmp_path: Path,
+) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
     )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(
+            access_token,
+            issue_comments=[
+                {
+                    "id": "comment-stale-1",
+                    "body": "Exact folder taxonomy and review bucket naming.",
+                    "user": {"id": "founder-1"},
+                    "createdAt": "2026-06-17T13:00:00Z",
+                },
+                {
+                    "id": "comment-stale-2",
+                    "body": "Exact measurement for the permissions review gate.",
+                    "user": {"id": "founder-1"},
+                    "createdAt": "2026-06-17T13:00:01Z",
+                },
+            ],
+        )
+        clients.append(client)
+        return client
+
+    model = CountingModel()
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=model,
+    )
+    payload = event_payload()
+    payload["webhookId"] = "hook-fresh-start-mode"
+    payload["agentSession"]["comment"]["body"] = (
+        "@ProductAgent I would like to start ideating from scratch. Can you hit me with "
+        "fresh ideas for my email agent?"
+    )
+    payload["agentSession"]["previousComments"] = [
+        {
+            "id": "comment-previous-1",
+            "body": "Exact folder taxonomy and review bucket naming.",
+            "userId": "founder-1",
+        },
+        {
+            "id": "comment-previous-2",
+            "body": "Exact measurement for the permissions review gate.",
+            "userId": "founder-1",
+        },
+    ]
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_700,
+    )
+
+    assert result.status == "accepted"
+    assert len(clients) == 1
+    assert clients[0].issue_comment_fetches == 0
+    assert model.calls == 1
+    response_body = clients[0].activities[-1][1]["body"]
+    assert response_body.startswith("Request received")
+    assert "Fresh start" in response_body
+    assert "Fresh ideas" in response_body or "Questions to answer next" in response_body
+    assert "Exact folder taxonomy" not in response_body
+    assert "permissions review gate" not in response_body
+    assert "starter checklist" not in response_body.lower()
+    assert "My current read" not in response_body
     assert "Founder Briefing" not in response_body
     installation_store.close()
     receipt_store.close()
@@ -870,11 +954,7 @@ def test_thread_starter_prompt_uses_latest_issue_comment_when_session_comment_is
     assert result.status == "accepted"
     response_body = clients[0].activities[-1][1]["body"]
     assert response_body.startswith("Request received")
-    assert (
-        "You’re right. I’m using the answers already in the thread instead of "
-        "replaying the earlier checklist."
-        in response_body
-    )
+    assert "You’re right. I’m using the answers already in the thread." in response_body
     installation_store.close()
     receipt_store.close()
 
@@ -1170,11 +1250,7 @@ def test_multi_turn_conversation_uses_current_prompt_and_reuses_only_duplicate_t
     )
 
     assert turn1_body.startswith("Request received")
-    assert (
-        "I’m using the answers already in the thread to move the discussion "
-        "forward."
-        in turn1_body
-    )
+    assert "I’m using the answers already in the thread to move this forward." in turn1_body
     assert turn2_body.startswith("Request received")
     assert (
         "It is clear enough to move forward from the answers already in the "
@@ -1480,11 +1556,7 @@ def test_webhook_casual_question_uses_conversation_mode_without_founder_briefing
     assert result.status == "accepted"
     response_body = clients[0].activities[1][1]["body"]
     assert response_body.startswith("Request received")
-    assert (
-        "I’m answering your latest turn directly instead of replaying the "
-        "starter checklist."
-        in response_body
-    )
+    assert "I’m responding to your latest turn." in response_body
     assert "Founder Briefing" not in response_body
     installation_store.close()
     receipt_store.close()
@@ -2438,6 +2510,58 @@ def test_markdown_formatter_uses_mode_specific_sections() -> None:
     assert "Goal" in markdown
     assert "In scope" in markdown
     assert "Approval note" in markdown
+    assert "Founder Briefing" not in markdown
+
+
+def test_markdown_formatter_supports_fresh_start_mode_without_ledger() -> None:
+    response = ProductAgentPolicy(
+        load_product_agent_role(),
+        DeterministicFakeProductModel(),
+    ).evaluate(
+        AgentSessionEvent(
+            type="AgentSessionEvent",
+            action="created",
+            webhookId="x",
+            webhookTimestamp=1,
+            oauthClientId="synthetic-product-agent-client",
+            appUserId="synthetic-product-agent-user",
+            agentSession=AgentSession(
+                id="s",
+                issue=LinearIssue(
+                    id="i",
+                    identifier="PST-1",
+                    title="A fresh product idea",
+                    description="Start from scratch.",
+                ),
+                comment=LinearComment(
+                    id="c",
+                    body="I would like to start ideating from scratch.",
+                ),
+            ),
+        )
+    )
+
+    from ai_native_studio.product_agent_live.product_briefs import RequestProvenance
+
+    markdown = format_response(
+        response,
+        RequestProvenance(
+            source_type="comment",
+            source_linear_workspace_id="workspace-1",
+            source_linear_team_id="team-1",
+            source_linear_issue_id="issue-1",
+            source_linear_issue_identifier="PST-1",
+            source_comment_id="comment-1",
+            source_event_id="webhook-1",
+            exact_triggering_instruction="I would like to start ideating from scratch.",
+            received_at_ms=1,
+        ),
+        mode="fresh_start",
+    )
+
+    assert "Fresh start" in markdown
+    assert "Fresh ideas" in markdown or "Questions to answer next" in markdown
+    assert "What I understand" not in markdown
     assert "Founder Briefing" not in markdown
 
 

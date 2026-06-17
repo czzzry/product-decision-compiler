@@ -377,7 +377,12 @@ class LiveProductAgentService:
             live_comment = event.agent_session.comment
             live_agent_activity = event.agent_activity
             live_prompt_context = event.agent_session.prompt_context
-            live_issue_comments = self._live_issue_human_comments(event, client)
+            response_mode = self._response_mode(turn, turn.previous_agent_response_count)
+            live_issue_comments = (
+                self._live_issue_human_comments(event, client)
+                if response_mode != "fresh_start"
+                else []
+            )
             live_issue_comment = self._latest_previous_human_comment(
                 live_issue_comments,
                 event.app_user_id,
@@ -659,6 +664,29 @@ class LiveProductAgentService:
                     decision_ledger=decision_ledger,
                 ),
             )
+        if response_mode == "fresh_start":
+            synthetic_event = self._synthetic_event(event, turn, fresh_start=True)
+            started_at = time.monotonic()
+            response = self._policy.evaluate(synthetic_event)
+            usage = response.advisory_result.model_usage
+            log_event(
+                "provider_response_completed",
+                session_id=event.agent_session.id,
+                provider=usage.provider,
+                model=usage.model,
+                latency_ms=int((time.monotonic() - started_at) * 1000),
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                total_tokens=usage.total_tokens,
+                estimated_cost_usd=usage.estimated_cost_usd,
+            )
+            return TerminalActivity(
+                type="response",
+                body=self._format_fresh_start_response(
+                    response,
+                    provenance,
+                ),
+            )
         if response_mode == "advisory":
             synthetic_event = self._synthetic_event(event, turn)
             started_at = time.monotonic()
@@ -709,7 +737,12 @@ class LiveProductAgentService:
         )
 
     @staticmethod
-    def _synthetic_event(event: LiveAgentSessionEvent, turn: ConversationTurn):
+    def _synthetic_event(
+        event: LiveAgentSessionEvent,
+        turn: ConversationTurn,
+        *,
+        fresh_start: bool = False,
+    ):
         from ai_native_studio.product_agent_proof.models import (
             AgentSession,
             AgentSessionEvent,
@@ -719,13 +752,31 @@ class LiveProductAgentService:
 
         session = event.agent_session
         comment_body = turn.exact_current_instruction
-        prompt_context_parts = [session.prompt_context]
-        if turn.recent_thread_context:
-            prompt_context_parts.append(
-                "Recent thread context:\n" + turn.recent_thread_context
-            )
-        if comment_body and comment_body.strip():
-            prompt_context_parts.append(f"Resolved current human request: {comment_body}")
+        if fresh_start:
+            prompt_context_parts: list[str] = []
+            previous_comments: list[LinearComment] = []
+            guidance: list[str] = []
+            issue_title = ""
+            issue_description = ""
+        else:
+            prompt_context_parts = [session.prompt_context]
+            if turn.recent_thread_context:
+                prompt_context_parts.append(
+                    "Recent thread context:\n" + turn.recent_thread_context
+                )
+            if comment_body and comment_body.strip():
+                prompt_context_parts.append(f"Resolved current human request: {comment_body}")
+            previous_comments = [
+                LinearComment(
+                    id=previous_comment.id,
+                    body=previous_comment.body,
+                )
+                for previous_comment in session.previous_comments
+                if previous_comment.body
+            ]
+            guidance = [str(item) for item in session.guidance]
+            issue_title = session.issue.title
+            issue_description = session.issue.description
         synthetic_comment = LinearComment(
             id=turn.current_human_activity_id or turn.source_comment_id or turn.source_event_id,
             body=comment_body,
@@ -742,20 +793,13 @@ class LiveProductAgentService:
                 issue=LinearIssue(
                     id=session.issue.id,
                     identifier=session.issue.identifier,
-                    title=session.issue.title,
-                    description=session.issue.description,
+                    title=issue_title,
+                    description=issue_description,
                 ),
                 comment=synthetic_comment,
                 promptContext="\n".join(part for part in prompt_context_parts if part),
-                guidance=[str(item) for item in session.guidance],
-                previousComments=[
-                    LinearComment(
-                        id=previous_comment.id,
-                        body=previous_comment.body,
-                    )
-                    for previous_comment in session.previous_comments
-                    if previous_comment.body
-                ],
+                guidance=guidance,
+                previousComments=previous_comments,
                 repositoryContent=[],
             ),
         )
@@ -1260,6 +1304,26 @@ class LiveProductAgentService:
         )
 
     @staticmethod
+    def _looks_like_fresh_start_turn(text: str) -> bool:
+        normalized = " ".join(text.split()).lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "from scratch",
+                "fresh start",
+                "fresh ideas",
+                "start over",
+                "start fresh",
+                "ideate from scratch",
+                "ideating from scratch",
+                "brainstorm from scratch",
+                "new ideas",
+                "new direction",
+                "start a new direction",
+            )
+        )
+
+    @staticmethod
     def _milestone_context_lines(ledger: ConversationDecisionLedger) -> list[str]:
         lines: list[str] = []
         if ledger.target_user:
@@ -1336,9 +1400,7 @@ class LiveProductAgentService:
             if decision_ledger.unresolved_questions:
                 lines.extend(decision_ledger.unresolved_questions)
         if not lines:
-            lines.append(
-                "Use the latest human answers instead of replaying the original checklist."
-            )
+            lines.append("Use the latest human answers to guide the next reply.")
             lines.append(
                 "Ask only the next question that unlocks the decision you want to make."
             )
@@ -1832,6 +1894,8 @@ class LiveProductAgentService:
             return "product_brief"
         if requests_scope_proposal(command_text):
             return "scope_proposal"
+        if self._looks_like_fresh_start_turn(command_text):
+            return "fresh_start"
         if previous_agent_response_count > 0 or self._looks_like_discovery_turn(command_text):
             return "discovery"
         if self._looks_like_advisory_prompt(command_text):
@@ -1885,10 +1949,7 @@ class LiveProductAgentService:
             "Request received",
             self._visible_request_text(provenance),
             "",
-            (
-                "I’m answering your latest turn directly instead of replaying "
-                "the starter checklist."
-            ),
+            "I’m responding to your latest turn.",
         ]
         normalized = " ".join(turn.exact_current_instruction.split()).lower()
         if any(
@@ -1899,10 +1960,7 @@ class LiveProductAgentService:
                 "Request received",
                 self._visible_request_text(provenance),
                 "",
-                (
-                    "You’re right. I’m using the latest turn instead of replaying "
-                    "the starter checklist."
-                ),
+                "You’re right. I’m using the latest turn.",
             ]
         ledger_lines = self._conversation_ledger_lines(decision_ledger)
         if ledger_lines:
@@ -1910,7 +1968,7 @@ class LiveProductAgentService:
         lines.extend(
             [
                 "",
-                "**My current read**",
+                "**What I’m focusing on**",
                 *self._conversation_recommendation_lines(
                     turn,
                     decision_ledger=decision_ledger,
@@ -1937,10 +1995,7 @@ class LiveProductAgentService:
             "Request received",
             self._visible_request_text(provenance),
             "",
-            (
-                "I’m using the answers already in the thread to move the "
-                "discussion forward."
-            ),
+            "I’m using the answers already in the thread to move this forward.",
         ]
         normalized = " ".join(turn.exact_current_instruction.split()).lower()
         if any(
@@ -1951,10 +2006,7 @@ class LiveProductAgentService:
                 "Request received",
                 self._visible_request_text(provenance),
                 "",
-                (
-                    "You’re right. I’m using the answers already in the thread "
-                    "instead of replaying the earlier checklist."
-                ),
+                "You’re right. I’m using the answers already in the thread.",
             ]
         elif any(
             marker in normalized
@@ -1987,6 +2039,32 @@ class LiveProductAgentService:
         if open_questions:
             lines.extend(["", "**Open questions**"])
             lines.extend(f"- {item}" for item in open_questions[:4])
+        return "\n".join(lines)
+
+    def _format_fresh_start_response(
+        self,
+        response,
+        provenance: RequestProvenance,
+    ) -> str:
+        lines = [
+            "Request received",
+            self._visible_request_text(provenance),
+            "",
+            "Fresh start",
+            "- I’m starting from this request only and ignoring earlier thread assumptions.",
+        ]
+        if response.product_questions:
+            lines.extend(["", "**Questions to answer next**"])
+            lines.extend(f"- {question}" for question in response.product_questions[:4])
+        if response.recommendations:
+            lines.extend(["", "**Fresh ideas**"])
+            lines.extend(f"- {item}" for item in response.recommendations[:4])
+        if response.refused_actions:
+            lines.extend(["", "**Guardrails**"])
+            lines.extend(f"- {item}" for item in response.refused_actions[:3])
+        if response.safety_notes:
+            lines.extend(["", "**Safety notes**"])
+            lines.extend(f"- {item}" for item in response.safety_notes[:3])
         return "\n".join(lines)
 
     def _format_scope_proposal_response(
