@@ -773,7 +773,11 @@ class LiveProductAgentService:
             )
 
         inline_activity = event.agent_activity
-        if inline_activity is not None and self._activity_instruction(inline_activity):
+        if (
+            inline_activity is not None
+            and self._is_user_generated_activity(self._activity_kind(inline_activity))
+            and self._activity_instruction(inline_activity)
+        ):
             return CommandEnvelope(
                 webhook_action=event.action,
                 agent_session_id=session.id,
