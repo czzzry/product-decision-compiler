@@ -370,6 +370,7 @@ class LiveProductAgentService:
             live_comment = event.agent_session.comment
             live_agent_activity = event.agent_activity
             live_prompt_context = event.agent_session.prompt_context
+            live_issue_comment = self._latest_issue_human_comment(event, client)
             log_event(
                 "conversation_turn_resolved",
                 session_id=event.agent_session.id,
@@ -403,6 +404,21 @@ class LiveProductAgentService:
                         " ".join(live_prompt_context.split()).encode("utf-8")
                     ).hexdigest()[:12]
                     if live_prompt_context.strip()
+                    else None
+                ),
+                live_issue_comment_id=self._source_comment_id(
+                    live_issue_comment,
+                    self._activity_instruction(live_issue_comment),
+                )
+                if live_issue_comment is not None
+                else None,
+                live_issue_comment_sha256=(
+                    hashlib.sha256(
+                        " ".join(self._activity_instruction(live_issue_comment).split()).encode(
+                            "utf-8"
+                        )
+                    ).hexdigest()[:12]
+                    if self._activity_instruction(live_issue_comment)
                     else None
                 ),
             )
@@ -826,6 +842,17 @@ class LiveProductAgentService:
                 instruction = comment.body.strip()
                 source_type = "comment"
                 source_comment_id = comment.id
+                latest_issue_comment = self._latest_issue_human_comment(event, client)
+                if latest_issue_comment is not None and latest_issue_comment.id != comment.id:
+                    latest_issue_comment_instruction = self._activity_instruction(
+                        latest_issue_comment
+                    )
+                    if latest_issue_comment_instruction:
+                        instruction = latest_issue_comment_instruction
+                        source_comment_id = latest_issue_comment.id
+                        actor_id = (
+                            self._extract_actor_id_from_comment(latest_issue_comment) or actor_id
+                        )
                 if self._looks_like_thread_starter(instruction) or self._looks_like_boilerplate(
                     instruction
                 ):
@@ -846,15 +873,15 @@ class LiveProductAgentService:
                                 source_comment_id = self._source_activity_id(resolved_activity)
                                 source_type = "comment"
                                 actor_id = self._actor_from_activity(resolved_activity) or actor_id
-                if self._looks_like_thread_starter(instruction):
-                    latest_previous = self._latest_previous_human_comment(
-                        session.previous_comments,
-                        event.app_user_id,
-                    )
-                    if latest_previous is not None:
-                        instruction = latest_previous.body.strip()
-                        source_comment_id = latest_previous.id
-            elif session.issue.description.strip():
+                    if self._looks_like_thread_starter(instruction):
+                        latest_previous = self._latest_previous_human_comment(
+                            session.previous_comments,
+                            event.app_user_id,
+                        )
+                        if latest_previous is not None:
+                            instruction = latest_previous.body.strip()
+                            source_comment_id = latest_previous.id
+            if not instruction and session.issue.description.strip():
                 instruction = session.issue.description.strip()
             if not instruction:
                 raise CommandResolutionError(
@@ -1148,6 +1175,20 @@ class LiveProductAgentService:
                 continue
             return comment
         return None
+
+    def _latest_issue_human_comment(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+    ) -> LiveLinearComment | None:
+        if not hasattr(client, "fetch_issue_comments"):
+            return None
+        comments = client.fetch_issue_comments(event.agent_session.issue.id)
+        parsed_comments = [
+            LiveLinearComment.model_validate(comment)
+            for comment in comments
+        ]
+        return self._latest_previous_human_comment(parsed_comments, event.app_user_id)
 
     @staticmethod
     def _activity_body(activity: object | None) -> str:

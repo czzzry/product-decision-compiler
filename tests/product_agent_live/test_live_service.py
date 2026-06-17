@@ -70,10 +70,12 @@ class RecordingGraphClient:
         access_token: str,
         *,
         session_activities: list[dict[str, object]] | None = None,
+        issue_comments: list[dict[str, object]] | None = None,
     ) -> None:
         self.access_token = access_token
         self.activities: list[tuple[str, dict[str, object], bool]] = []
         self.session_activities = list(session_activities or [])
+        self.issue_comments = list(issue_comments or [])
 
     def create_agent_activity(
         self,
@@ -87,6 +89,10 @@ class RecordingGraphClient:
     def fetch_agent_session_activities(self, session_id: str) -> list[dict[str, object]]:
         assert session_id
         return list(self.session_activities)
+
+    def fetch_issue_comments(self, issue_id: str) -> list[dict[str, object]]:
+        assert issue_id
+        return list(self.issue_comments)
 
 
 class RefreshThenRecordClient(RecordingGraphClient):
@@ -749,6 +755,100 @@ def test_thread_starter_prompt_uses_latest_human_reply_in_previous_comments(
     assert response_body.startswith("You're right.")
     assert "Request received" not in response_body
     assert "clarifying questions" not in response_body.lower()
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_thread_starter_prompt_uses_latest_issue_comment_when_session_comment_is_stale(
+    tmp_path: Path,
+) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(
+            access_token,
+            issue_comments=[
+                {
+                    "id": "comment-root",
+                    "body": (
+                        "@ProductAgent Please ideate with me on a Gmail email agent. "
+                        "Do not implement."
+                    ),
+                    "user": {"id": "founder-1"},
+                    "createdAt": "2026-06-17T14:32:22Z",
+                },
+                {
+                    "id": "comment-founder-followup",
+                    "body": "Why are you repeating yourself?",
+                    "user": {"id": "founder-1"},
+                    "createdAt": "2026-06-17T14:37:32Z",
+                },
+                {
+                    "id": "comment-app-response",
+                    "body": "ProductAgent: here is the usual checklist.",
+                    "user": {"id": "app-user-1"},
+                    "createdAt": "2026-06-17T14:37:34Z",
+                },
+            ],
+        )
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=RejectingAdvisoryModel(),
+    )
+    payload = event_payload()
+    payload["webhookId"] = "hook-live-issue-comment-followup"
+    payload["action"] = "created"
+    payload["agentSession"]["comment"] = {
+        "id": "comment-root",
+        "body": "@ProductAgent Please ideate with me on a Gmail email agent. Do not implement.",
+    }
+    payload["agentSession"]["previousComments"] = [
+        {
+            "id": "comment-founder-followup",
+            "body": "Why are you repeating yourself?",
+            "userId": "founder-1",
+            "createdAt": "2026-06-17T14:37:32Z",
+        },
+        {
+            "id": "comment-app-response",
+            "body": "ProductAgent: here is the usual checklist.",
+            "userId": "app-user-1",
+            "createdAt": "2026-06-17T14:37:34Z",
+        },
+    ]
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_600,
+    )
+
+    assert result.status == "accepted"
+    response_body = clients[0].activities[-1][1]["body"]
+    assert response_body.startswith("You're right.")
+    assert "Request received" not in response_body
     installation_store.close()
     receipt_store.close()
 

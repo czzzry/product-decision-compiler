@@ -198,6 +198,38 @@ class LinearGraphQLClient:
             "team_id": str(team.get("id")) if isinstance(team, dict) and team.get("id") else None,
         }
 
+    def fetch_issue_comments(self, issue_id: str) -> list[dict[str, object]]:
+        data = self.request(
+            """
+            query IssueComments($id: String!) {
+              issue(id: $id) {
+                id
+                comments {
+                  nodes {
+                    id
+                    body
+                    createdAt
+                    user {
+                      id
+                    }
+                  }
+                }
+              }
+            }
+            """,
+            {"id": issue_id},
+        )
+        issue = data.get("issue")
+        if not isinstance(issue, dict):
+            return []
+        comments = issue.get("comments")
+        if not isinstance(comments, dict):
+            return []
+        nodes = comments.get("nodes")
+        if not isinstance(nodes, list):
+            return []
+        return [node for node in nodes if isinstance(node, dict)]
+
     def fetch_agent_session_activities(self, session_id: str) -> list[dict[str, object]]:
         data = self.request(
             """
