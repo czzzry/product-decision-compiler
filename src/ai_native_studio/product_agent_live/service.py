@@ -70,16 +70,24 @@ REQUIRED_LINEAR_WRITE_SCOPE = "write"
 
 
 @dataclass(frozen=True)
-class CommandEnvelope:
+class ConversationTurn:
     webhook_action: str
     agent_session_id: str
     actor_linear_user_id: str | None
     source_type: str
     exact_current_instruction: str
+    current_human_activity_id: str | None
+    source_linear_workspace_id: str
+    source_linear_team_id: str
+    source_linear_issue_id: str
+    source_linear_issue_identifier: str
     source_agent_activity_id: str | None
     source_comment_id: str | None
     source_event_id: str
     received_at_ms: int
+    recent_thread_context: str
+    previous_agent_response_count: int
+    route_type: str
     signals: tuple[str, ...] = ()
     activity_typename: str | None = None
 
@@ -354,18 +362,28 @@ class LiveProductAgentService:
         refreshed: bool = False,
     ) -> None:
         try:
-            command = self._command_envelope(event, client)
-            provenance = self._request_provenance(event, client, command)
+            turn = self._conversation_turn(event, client)
+            provenance = self._request_provenance(event, client, turn)
             self._request_provenance_store.create(self._invocation_id(event), provenance)
-            operation_type = self._operation_type(command)
-            operation_key = self._logical_operation_key(event, client, command, operation_type)
+            operation_key = self._logical_operation_key(turn)
             cached_outcome = self._command_outcome_store.get(operation_key)
+            log_event(
+                "conversation_turn_resolved",
+                session_id=event.agent_session.id,
+                current_human_activity_id=turn.current_human_activity_id,
+                current_human_prompt_sha256=hashlib.sha256(
+                    " ".join(turn.exact_current_instruction.split()).encode("utf-8")
+                ).hexdigest()[:12],
+                route_type=turn.route_type,
+                reused_cached_outcome=cached_outcome is not None,
+                previous_agent_response_count=turn.previous_agent_response_count,
+            )
 
             client.create_agent_activity(
                 event.agent_session.id,
                 {
                     "type": "thought",
-                    "body": self._thought_message(event, command, refreshed=refreshed),
+                    "body": self._thought_message(event, turn, refreshed=refreshed),
                 },
                 ephemeral=True,
             )
@@ -377,16 +395,20 @@ class LiveProductAgentService:
                 client,
                 event,
                 provenance,
-                command,
-                operation_type,
+                turn,
+            )
+            stored_operation_type = (
+                turn.route_type
+                if turn.route_type in {"advisory", "approval", "product_brief", "stop"}
+                else "advisory"
             )
             outcome = StoredCommandOutcome(
                 operation_key=operation_key,
-                operation_type=operation_type,
+                operation_type=stored_operation_type,
                 session_id=event.agent_session.id,
-                source_activity_id=command.source_agent_activity_id,
-                source_comment_id=command.source_comment_id,
-                source_event_id=command.source_event_id,
+                source_activity_id=turn.source_agent_activity_id,
+                source_comment_id=turn.source_comment_id,
+                source_event_id=turn.source_event_id,
                 terminal_activity_type=terminal.type,
                 terminal_body=terminal.body,
                 processed_at_ms=event.webhook_timestamp,
@@ -413,22 +435,20 @@ class LiveProductAgentService:
         client: LinearGraphQLClient,
         event: LiveAgentSessionEvent,
         provenance: RequestProvenance,
-        command: CommandEnvelope,
-        operation_type: str,
+        turn: ConversationTurn,
     ) -> TerminalActivity:
         try:
             return self._compute_terminal_activity(
                 client,
                 event,
                 provenance,
-                command,
-                operation_type,
+                turn,
             )
         except CommandResolutionError as error:
             return TerminalActivity(type="error", body=self._format_error_response(str(error)))
         except IntelligenceError as error:
             latency_ms = 0
-            if operation_type == "product_brief":
+            if turn.route_type == "product_brief":
                 provider = getattr(self._brief_model, "provider_name", self._model_provider)
                 model = getattr(self._brief_model, "model_name", self._model_name)
             else:
@@ -465,14 +485,13 @@ class LiveProductAgentService:
         client: LinearGraphQLClient,
         event: LiveAgentSessionEvent,
         provenance: RequestProvenance,
-        command: CommandEnvelope,
-        operation_type: str,
+        turn: ConversationTurn,
     ) -> TerminalActivity:
-        command_text = command.exact_current_instruction
-        if operation_type == "stop":
+        command_text = turn.exact_current_instruction
+        if turn.route_type == "stop":
             return TerminalActivity(
                 type="response",
-                body=self._format_stop_response(event, command),
+                body=self._format_stop_response(event, turn),
             )
 
         approval = classify_approval_command(command_text)
@@ -480,14 +499,14 @@ class LiveProductAgentService:
             result = self._product_briefs.approve(
                 founder_linear_user_id=self._founder_linear_user_id(),
                 authenticated_actor_id=(
-                    command.actor_linear_user_id
+                    turn.actor_linear_user_id
                     or self._resolve_authenticated_actor_id(event, client)
                 ),
                 app_user_id=event.app_user_id,
                 command_text=command_text,
-                source_event_id=command.source_event_id,
-                source_comment_id=command.source_comment_id or "",
-                source_activity_id=command.source_agent_activity_id,
+                source_event_id=turn.source_event_id,
+                source_comment_id=turn.source_comment_id or "",
+                source_activity_id=turn.source_agent_activity_id,
                 now_ms=event.webhook_timestamp,
             )
             return TerminalActivity(
@@ -495,11 +514,11 @@ class LiveProductAgentService:
                 body=format_approval_response(result, provenance),
             )
 
-        if operation_type == "product_brief":
+        if turn.route_type == "product_brief":
             started_at = time.monotonic()
             result = self._product_briefs.create_or_reuse(
-                self._brief_context(event, client, provenance, command),
-                self._collect_live_context(event, command),
+                self._brief_context(event, client, provenance, turn),
+                self._collect_live_context(event, turn),
             )
             log_event(
                 "product_brief_response_completed",
@@ -513,7 +532,24 @@ class LiveProductAgentService:
                 body=format_product_brief_response(result),
             )
 
-        synthetic_event = self._synthetic_event(event, command)
+        if turn.route_type == "brief_reference":
+            return TerminalActivity(
+                type="response",
+                body=self._format_brief_reference_response(event, client, turn, provenance),
+            )
+
+        if turn.route_type == "conversational_follow_up":
+            return TerminalActivity(
+                type="response",
+                body=self._format_conversational_follow_up_response(
+                    event,
+                    client,
+                    turn,
+                    provenance,
+                ),
+            )
+
+        synthetic_event = self._synthetic_event(event, turn)
         started_at = time.monotonic()
         response = self._policy.evaluate(synthetic_event)
         usage = response.advisory_result.model_usage
@@ -548,7 +584,7 @@ class LiveProductAgentService:
         )
 
     @staticmethod
-    def _synthetic_event(event: LiveAgentSessionEvent, command: CommandEnvelope):
+    def _synthetic_event(event: LiveAgentSessionEvent, turn: ConversationTurn):
         from ai_native_studio.product_agent_proof.models import (
             AgentSession,
             AgentSessionEvent,
@@ -557,29 +593,18 @@ class LiveProductAgentService:
         )
 
         session = event.agent_session
-        comment_body = command.exact_current_instruction
-        prompt_context = session.prompt_context
-        live_comment = session.comment
-        synthetic_comment = None
-        if live_comment is not None:
-            synthetic_comment = LinearComment(
-                id=live_comment.id,
-                body=live_comment.body,
+        comment_body = turn.exact_current_instruction
+        prompt_context_parts = [session.prompt_context]
+        if turn.recent_thread_context:
+            prompt_context_parts.append(
+                "Recent thread context:\n" + turn.recent_thread_context
             )
         if comment_body and comment_body.strip():
-            prompt_context = "\n".join(
-                part
-                for part in (
-                    session.prompt_context,
-                    f"Resolved current human request: {comment_body}",
-                )
-                if part
-            )
-        if synthetic_comment is None and comment_body:
-            synthetic_comment = LinearComment(
-                id=command.source_comment_id or command.source_event_id,
-                body=comment_body,
-            )
+            prompt_context_parts.append(f"Resolved current human request: {comment_body}")
+        synthetic_comment = LinearComment(
+            id=turn.current_human_activity_id or turn.source_comment_id or turn.source_event_id,
+            body=comment_body,
+        )
         return AgentSessionEvent(
             type="AgentSessionEvent",
             action=event.action,
@@ -596,7 +621,7 @@ class LiveProductAgentService:
                     description=session.issue.description,
                 ),
                 comment=synthetic_comment,
-                promptContext=prompt_context,
+                promptContext="\n".join(part for part in prompt_context_parts if part),
                 guidance=[str(item) for item in session.guidance],
                 previousComments=[
                     LinearComment(
@@ -690,7 +715,7 @@ class LiveProductAgentService:
         event: LiveAgentSessionEvent,
         client: LinearGraphQLClient,
         provenance: RequestProvenance,
-        command: CommandEnvelope,
+        command: ConversationTurn,
     ) -> ProductBriefContext:
         workspace_id = self._extract_issue_metadata_value(
             event.agent_session.issue,
@@ -760,9 +785,10 @@ class LiveProductAgentService:
         self,
         event: LiveAgentSessionEvent,
         client: LinearGraphQLClient,
-    ) -> CommandEnvelope:
+    ) -> ConversationTurn:
         session = event.agent_session
         comment = session.comment
+        workspace_id, team_id = self._conversation_issue_metadata(event, client)
         if event.action == "created":
             instruction = ""
             source_type = "issue_description"
@@ -796,16 +822,24 @@ class LiveProductAgentService:
                 raise CommandResolutionError(
                     "ProductAgent could not identify the instruction that created this session."
                 )
-            return CommandEnvelope(
+            return ConversationTurn(
                 webhook_action=event.action,
                 agent_session_id=session.id,
                 actor_linear_user_id=actor_id or event.app_user_id,
                 source_type=source_type,
                 exact_current_instruction=instruction,
+                current_human_activity_id=source_comment_id,
+                source_linear_workspace_id=workspace_id,
+                source_linear_team_id=team_id,
+                source_linear_issue_id=session.issue.id,
+                source_linear_issue_identifier=session.issue.identifier,
                 source_agent_activity_id=None,
                 source_comment_id=source_comment_id,
                 source_event_id=self._source_event_id(event),
                 received_at_ms=event.webhook_timestamp,
+                recent_thread_context="",
+                previous_agent_response_count=0,
+                route_type="advisory",
                 activity_typename=None,
             )
 
@@ -815,7 +849,7 @@ class LiveProductAgentService:
             and self._is_user_generated_activity(self._activity_kind(inline_activity))
             and self._activity_instruction(inline_activity)
         ):
-            return CommandEnvelope(
+            return ConversationTurn(
                 webhook_action=event.action,
                 agent_session_id=session.id,
                 actor_linear_user_id=(
@@ -829,10 +863,18 @@ class LiveProductAgentService:
                 or event.app_user_id,
                 source_type="comment",
                 exact_current_instruction=self._activity_instruction(inline_activity),
+                current_human_activity_id=self._source_activity_id(inline_activity),
+                source_linear_workspace_id=workspace_id,
+                source_linear_team_id=team_id,
+                source_linear_issue_id=session.issue.id,
+                source_linear_issue_identifier=session.issue.identifier,
                 source_agent_activity_id=self._source_activity_id(inline_activity),
                 source_comment_id=None,
                 source_event_id=self._source_event_id(event),
                 received_at_ms=event.webhook_timestamp,
+                recent_thread_context="",
+                previous_agent_response_count=0,
+                route_type="advisory",
                 signals=self._activity_signals(inline_activity),
                 activity_typename=self._activity_kind(inline_activity),
             )
@@ -840,7 +882,7 @@ class LiveProductAgentService:
         if comment is not None:
             comment_instruction = comment.body.strip()
             if comment_instruction:
-                return CommandEnvelope(
+                return ConversationTurn(
                     webhook_action=event.action,
                     agent_session_id=session.id,
                     actor_linear_user_id=(
@@ -848,10 +890,18 @@ class LiveProductAgentService:
                     ),
                     source_type="comment",
                     exact_current_instruction=comment_instruction,
+                    current_human_activity_id=comment.id,
+                    source_linear_workspace_id=workspace_id,
+                    source_linear_team_id=team_id,
+                    source_linear_issue_id=session.issue.id,
+                    source_linear_issue_identifier=session.issue.identifier,
                     source_agent_activity_id=None,
                     source_comment_id=comment.id,
                     source_event_id=self._source_event_id(event),
                     received_at_ms=event.webhook_timestamp,
+                    recent_thread_context="",
+                    previous_agent_response_count=0,
+                    route_type="advisory",
                     signals=self._activity_signals(comment),
                     activity_typename=self._activity_kind(comment),
                 )
@@ -868,7 +918,7 @@ class LiveProductAgentService:
             raise CommandResolutionError(
                 "ProductAgent could not identify a current human prompt for this prompted webhook."
             )
-        return CommandEnvelope(
+        return ConversationTurn(
             webhook_action=event.action,
             agent_session_id=session.id,
             actor_linear_user_id=(
@@ -878,12 +928,149 @@ class LiveProductAgentService:
             or event.app_user_id,
             source_type="comment",
             exact_current_instruction=instruction,
+            current_human_activity_id=self._source_activity_id(activity),
+            source_linear_workspace_id=workspace_id,
+            source_linear_team_id=team_id,
+            source_linear_issue_id=session.issue.id,
+            source_linear_issue_identifier=session.issue.identifier,
             source_agent_activity_id=self._source_activity_id(activity),
             source_comment_id=None,
             source_event_id=self._source_event_id(event),
             received_at_ms=event.webhook_timestamp,
+            recent_thread_context="",
+            previous_agent_response_count=0,
+            route_type="advisory",
             signals=self._activity_signals(activity),
             activity_typename=activity_kind,
+        )
+
+    def _conversation_turn(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+    ) -> ConversationTurn:
+        command = self._command_envelope(event, client)
+        session = event.agent_session
+        previous_agent_response_count = self._previous_agent_response_count(
+            session.previous_comments,
+            event.app_user_id,
+        )
+        recent_thread_context = self._recent_thread_context(session.previous_comments)
+        route_type = self._route_type(command, previous_agent_response_count)
+        return ConversationTurn(
+            webhook_action=command.webhook_action,
+            agent_session_id=command.agent_session_id,
+            actor_linear_user_id=command.actor_linear_user_id,
+            source_type=command.source_type,
+            exact_current_instruction=command.exact_current_instruction,
+            current_human_activity_id=command.current_human_activity_id,
+            source_linear_workspace_id=command.source_linear_workspace_id,
+            source_linear_team_id=command.source_linear_team_id,
+            source_linear_issue_id=command.source_linear_issue_id,
+            source_linear_issue_identifier=command.source_linear_issue_identifier,
+            source_agent_activity_id=command.source_agent_activity_id,
+            source_comment_id=command.source_comment_id,
+            source_event_id=command.source_event_id,
+            received_at_ms=command.received_at_ms,
+            recent_thread_context=recent_thread_context,
+            previous_agent_response_count=previous_agent_response_count,
+            route_type=route_type,
+            signals=command.signals,
+            activity_typename=command.activity_typename,
+        )
+
+    def _conversation_issue_metadata(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+    ) -> tuple[str, str]:
+        workspace_id = self._extract_issue_metadata_value(
+            event.agent_session.issue,
+            "organizationId",
+        )
+        workspace_id = workspace_id or self._extract_issue_metadata_value(
+            event.agent_session.issue,
+            ("organization", "id"),
+        )
+        team_id = self._extract_issue_metadata_value(event.agent_session.issue, "teamId")
+        team_id = team_id or self._extract_issue_metadata_value(
+            event.agent_session.issue,
+            ("team", "id"),
+        )
+        if not workspace_id or not team_id:
+            metadata = client.fetch_issue_metadata(event.agent_session.issue.id)
+            workspace_id = workspace_id or metadata.get("workspace_id")
+            team_id = team_id or metadata.get("team_id")
+        if not workspace_id or not team_id:
+            raise LinearAPIError(
+                "ProductAgent could not determine the Linear workspace and team IDs for this issue."
+            )
+        return workspace_id, team_id
+
+    def _previous_agent_response_count(
+        self,
+        comments: list[LiveLinearComment],
+        app_user_id: str,
+    ) -> int:
+        return sum(
+            1
+            for comment in comments
+            if self._extract_actor_id_from_comment(comment) == app_user_id
+            and comment.body.strip()
+        )
+
+    @staticmethod
+    def _recent_thread_context(comments: list[LiveLinearComment], max_items: int = 4) -> str:
+        recent = [comment.body.strip() for comment in comments if comment.body.strip()][-max_items:]
+        return "\n".join(recent)
+
+    def _route_type(
+        self,
+        turn: ConversationTurn,
+        previous_agent_response_count: int,
+    ) -> str:
+        command_text = turn.exact_current_instruction
+        if "stop" in turn.signals:
+            return "stop"
+        if classify_approval_command(command_text).kind != "none":
+            return "approval"
+        if self._is_brief_reference_request(command_text):
+            return "brief_reference"
+        if requests_product_brief(command_text):
+            return "product_brief"
+        if previous_agent_response_count > 0 or self._looks_like_follow_up_turn(command_text):
+            return "conversational_follow_up"
+        return "advisory"
+
+    @staticmethod
+    def _is_brief_reference_request(text: str) -> bool:
+        normalized = " ".join(text.split()).lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "what spec do i approve",
+                "what spec should i approve",
+                "what do i reference in order to approve",
+                "what do i reference",
+                "what approval command",
+                "what should i approve",
+            )
+        )
+
+    @staticmethod
+    def _looks_like_follow_up_turn(text: str) -> bool:
+        normalized = " ".join(text.split()).lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "do you have any questions",
+                "is it clear",
+                "why are you repeating yourself",
+                "respond based on the answers",
+                "based on the answers i gave you",
+                "try again",
+                "answer me back",
+            )
         )
 
     @staticmethod
@@ -1009,7 +1196,7 @@ class LiveProductAgentService:
         return comment.id
 
     @staticmethod
-    def _collect_live_context(event: LiveAgentSessionEvent, command: CommandEnvelope) -> str:
+    def _collect_live_context(event: LiveAgentSessionEvent, command: ConversationTurn) -> str:
         session = event.agent_session
         parts = [
             session.issue.title,
@@ -1024,7 +1211,7 @@ class LiveProductAgentService:
     def _thought_message(
         self,
         event: LiveAgentSessionEvent,
-        command: CommandEnvelope,
+        command: ConversationTurn,
         refreshed: bool = False,
     ) -> str:
         prefix = "ProductAgent resumed after refreshing its Linear token. " if refreshed else ""
@@ -1050,35 +1237,14 @@ class LiveProductAgentService:
         self,
         event: LiveAgentSessionEvent,
         client: LinearGraphQLClient,
-        command: CommandEnvelope,
+        command: ConversationTurn,
     ) -> RequestProvenance:
-        workspace_id = self._extract_issue_metadata_value(
-            event.agent_session.issue,
-            "organizationId",
-        )
-        workspace_id = workspace_id or self._extract_issue_metadata_value(
-            event.agent_session.issue,
-            ("organization", "id"),
-        )
-        team_id = self._extract_issue_metadata_value(event.agent_session.issue, "teamId")
-        team_id = team_id or self._extract_issue_metadata_value(
-            event.agent_session.issue,
-            ("team", "id"),
-        )
-        if not workspace_id or not team_id:
-            metadata = client.fetch_issue_metadata(event.agent_session.issue.id)
-            workspace_id = workspace_id or metadata.get("workspace_id")
-            team_id = team_id or metadata.get("team_id")
-        if not workspace_id or not team_id:
-            raise LinearAPIError(
-                "ProductAgent could not determine the Linear workspace and team IDs for this issue."
-            )
         return RequestProvenance(
             source_type=command.source_type,
-            source_linear_workspace_id=workspace_id,
-            source_linear_team_id=team_id,
-            source_linear_issue_id=event.agent_session.issue.id,
-            source_linear_issue_identifier=event.agent_session.issue.identifier,
+            source_linear_workspace_id=command.source_linear_workspace_id,
+            source_linear_team_id=command.source_linear_team_id,
+            source_linear_issue_id=command.source_linear_issue_id,
+            source_linear_issue_identifier=command.source_linear_issue_identifier,
             source_agent_session_id=command.agent_session_id,
             source_comment_id=command.source_comment_id,
             source_activity_id=command.source_agent_activity_id,
@@ -1103,49 +1269,20 @@ class LiveProductAgentService:
     def _invocation_id(event: LiveAgentSessionEvent) -> str:
         return f"{event.webhook_id}:{event.webhook_timestamp}"
 
-    def _operation_type(self, command: CommandEnvelope) -> str:
-        if "stop" in command.signals:
-            return "stop"
-        if classify_approval_command(command.exact_current_instruction).kind != "none":
-            return "approval"
-        if requests_product_brief(command.exact_current_instruction):
-            return "product_brief"
-        return "advisory"
-
-    def _logical_operation_key(
-        self,
-        event: LiveAgentSessionEvent,
-        client: LinearGraphQLClient,
-        command: CommandEnvelope,
-        operation_type: str,
-    ) -> str:
-        workspace_id = self._extract_issue_metadata_value(
-            event.agent_session.issue,
-            "organizationId",
-        )
-        workspace_id = workspace_id or self._extract_issue_metadata_value(
-            event.agent_session.issue,
-            ("organization", "id"),
-        )
-        team_id = self._extract_issue_metadata_value(event.agent_session.issue, "teamId")
-        team_id = team_id or self._extract_issue_metadata_value(
-            event.agent_session.issue,
-            ("team", "id"),
-        )
-        if not workspace_id or not team_id:
-            metadata = client.fetch_issue_metadata(event.agent_session.issue.id)
-            workspace_id = workspace_id or metadata.get("workspace_id") or ""
-            team_id = team_id or metadata.get("team_id") or ""
+    def _logical_operation_key(self, turn: ConversationTurn) -> str:
+        workspace_id = turn.source_linear_workspace_id
+        team_id = turn.source_linear_team_id
         payload = {
-            "operation_type": operation_type,
+            "operation_type": turn.route_type,
             "workspace_id": workspace_id,
             "team_id": team_id,
-            "issue_id": event.agent_session.issue.id,
-            "session_id": command.agent_session_id,
-            "source_activity_id": command.source_agent_activity_id,
-            "source_comment_id": command.source_comment_id,
+            "issue_id": turn.source_linear_issue_id,
+            "session_id": turn.agent_session_id,
+            "current_human_activity_id": turn.current_human_activity_id,
+            "source_activity_id": turn.source_agent_activity_id,
+            "source_comment_id": turn.source_comment_id,
             "instruction_fingerprint": hashlib.sha256(
-                " ".join(command.exact_current_instruction.split()).encode("utf-8")
+                " ".join(turn.exact_current_instruction.split()).encode("utf-8")
             ).hexdigest()[:20],
         }
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -1237,7 +1374,7 @@ class LiveProductAgentService:
             "- No Founder approval was recorded."
         )
 
-    def _format_stop_response(self, event: LiveAgentSessionEvent, command: CommandEnvelope) -> str:
+    def _format_stop_response(self, event: LiveAgentSessionEvent, command: ConversationTurn) -> str:
         prior_work = [
             outcome
             for outcome in self._command_outcome_store.list_for_session(event.agent_session.id)
@@ -1260,6 +1397,90 @@ class LiveProductAgentService:
             "- No OpenAI call was started.\n"
             "- No Product Brief was created or changed.\n"
             "- No Founder approval was recorded."
+        )
+
+    def _format_brief_reference_response(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+        turn: ConversationTurn,
+        provenance: RequestProvenance,
+    ) -> str:
+        brief_id = ProductBriefService._brief_id(event.agent_session.issue.identifier)
+        versions = self._product_brief_store.list_versions(brief_id)
+        latest = next(
+            (version for version in reversed(versions) if version.status != "superseded"),
+            None,
+        )
+        if latest is None:
+            return (
+                "No approvable Product Brief exists yet for this thread.\n\n"
+                "If you want, I can create one from the current context next."
+            )
+        lines = [
+            "Here is the current Product Brief reference.",
+            "",
+            f"Version: `{latest.version_id}`",
+            f"Content hash: `{latest.content_hash[:12]}`",
+            f"Status: `{latest.status}`",
+            "",
+            "Approval command:",
+            f"`APPROVE SPEC {latest.version_id}`",
+            "",
+            "No new brief was created for this turn.",
+        ]
+        if latest.status == "awaiting_founder_approval":
+            lines.insert(5, "This version is awaiting authenticated Founder approval.")
+        return "\n".join(lines)
+
+    def _format_conversational_follow_up_response(
+        self,
+        event: LiveAgentSessionEvent,
+        client: LinearGraphQLClient,
+        turn: ConversationTurn,
+        provenance: RequestProvenance,
+    ) -> str:
+        normalized = " ".join(turn.exact_current_instruction.split()).lower()
+        brief_id = ProductBriefService._brief_id(event.agent_session.issue.identifier)
+        latest_brief = next(
+            (
+                version
+                for version in reversed(self._product_brief_store.list_versions(brief_id))
+                if version.status != "superseded"
+            ),
+            None,
+        )
+        if any(
+            marker in normalized
+            for marker in ("why are you repeating yourself", "repeating yourself")
+        ):
+            return (
+                "You're right. I was treating the thread too much like a fresh ideation prompt "
+                "instead of a new turn.\n\n"
+                "I’m now using the latest human activity as the turn to answer, so follow-ups "
+                "should change the response instead of replaying the starter plan."
+            )
+        if any(marker in normalized for marker in ("do you have any questions", "is it clear")):
+            if latest_brief is not None:
+                return (
+                    "It is clear enough to reference the current Product Brief.\n\n"
+                    f"The brief version is `{latest_brief.version_id}` with content hash "
+                    f"`{latest_brief.content_hash[:12]}`.\n"
+                    "If you want a tighter next pass, I can refine the brief from the latest "
+                    "answers instead of restating the earlier checklist."
+                )
+            return (
+                "It is mostly clear, and I do not need to repeat the earlier checklist.\n\n"
+                "If you want the next step, I can turn your answers into a versioned Product "
+                "Brief or answer a specific open question."
+            )
+        if "what spec do i approve" in normalized or "what do i reference" in normalized:
+            return self._format_brief_reference_response(event, client, turn, provenance)
+        return (
+            "I’m answering the latest turn directly.\n\n"
+            "Your follow-up changes the context, so I am not replaying the original advisory "
+            "plan. If you want, I can turn this into a Product Brief or clarify the remaining "
+            "gaps from your answers."
         )
 
     @staticmethod

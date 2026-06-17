@@ -379,14 +379,24 @@ def test_advisory_follow_up_synthesizes_direct_v1_plan_from_answers(tmp_path: Pa
     )
     payload = event_payload()
     payload["webhookId"] = "hook-follow-up-history-1"
-    payload["agentSession"]["comment"]["body"] = (
-        "This thread is for an agent session with productagent."
-    )
+    payload["action"] = "prompted"
+    payload["agentActivity"] = {
+        "id": "activity-user-followup-2",
+        "type": "comment",
+        "body": "Do you have any questions for me or is it clear at this point?",
+        "user": {"id": "founder-1"},
+        "createdAt": "2026-06-17T13:08:35Z",
+    }
     payload["agentSession"]["previousComments"] = [
         {"id": "comment-previous-1", "body": "Just me."},
         {
             "id": "comment-previous-2",
             "body": "Triage, label, categorize, and review the risky items.",
+        },
+        {
+            "id": "comment-previous-3",
+            "body": "ProductAgent: here is the usual checklist.",
+            "userId": "app-user-1",
         },
     ]
     body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
@@ -400,12 +410,9 @@ def test_advisory_follow_up_synthesizes_direct_v1_plan_from_answers(tmp_path: Pa
     assert result.status == "accepted"
     assert len(clients[0].activities) >= 1
     response_body = clients[0].activities[-1][1]["body"]
-    assert response_body.startswith(
-        "You asked me to answer back based on the thread and your clarifying answers."
-    )
-    assert "Build a single Gmail inbox triage workflow" in response_body
-    assert "without granting send or delete authority" in response_body
-    assert "No autonomous sending or replying in v1." in response_body
+    assert response_body.startswith("It is mostly clear")
+    assert "repeat the earlier checklist" in response_body
+    assert "Build a single Gmail inbox triage workflow" not in response_body
     installation_store.close()
     receipt_store.close()
 
@@ -470,9 +477,14 @@ def test_advisory_follow_up_ignores_app_authored_previous_comments(tmp_path: Pat
     )
     payload = event_payload()
     payload["webhookId"] = "hook-follow-up-history-2"
-    payload["agentSession"]["comment"]["body"] = (
-        "This thread is for an agent session with productagent."
-    )
+    payload["action"] = "prompted"
+    payload["agentActivity"] = {
+        "id": "activity-user-followup-3a",
+        "type": "comment",
+        "body": "Why are you just repeating yourself?",
+        "user": {"id": "founder-1"},
+        "createdAt": "2026-06-17T13:08:35Z",
+    }
     payload["agentSession"]["previousComments"] = [
         {
             "id": "comment-previous-1",
@@ -495,12 +507,9 @@ def test_advisory_follow_up_ignores_app_authored_previous_comments(tmp_path: Pat
 
     assert result.status == "accepted"
     response_body = clients[0].activities[-1][1]["body"]
-    assert response_body.startswith(
-        "You asked me to answer back based on the thread and your clarifying answers."
-    )
-    assert "Build a single Gmail inbox triage workflow" in response_body
-    assert "review bucket" in response_body.lower()
-    assert "delete permissions" in response_body.lower()
+    assert response_body.startswith("You're right.")
+    assert "follow-ups should change the response" in response_body
+    assert "usual checklist" not in response_body
     installation_store.close()
     receipt_store.close()
 
@@ -542,14 +551,24 @@ def test_advisory_follow_up_with_same_source_ids_but_new_instruction_does_not_re
     first_payload = event_payload()
     first_payload["webhookId"] = "hook-follow-up-cache-1"
     first_payload["webhookTimestamp"] = 1_700_000_000_200
-    first_payload["agentSession"]["comment"]["body"] = (
-        "This thread is for an agent session with productagent."
-    )
+    first_payload["action"] = "prompted"
+    first_payload["agentActivity"] = {
+        "id": "activity-user-followup-4a",
+        "type": "comment",
+        "body": "Do you have any questions for me or is it clear at this point?",
+        "user": {"id": "founder-1"},
+        "createdAt": "2026-06-17T13:08:35Z",
+    }
     first_payload["agentSession"]["previousComments"] = [
         {
             "id": "comment-shared-source",
             "body": "User: make this a narrow plan for a single workflow.",
             "userId": "founder-1",
+        },
+        {
+            "id": "comment-shared-agent",
+            "body": "ProductAgent: here is the usual checklist.",
+            "userId": "app-user-1",
         }
     ]
     first_body = json.dumps(first_payload, separators=(",", ":"), sort_keys=True).encode()
@@ -557,9 +576,14 @@ def test_advisory_follow_up_with_same_source_ids_but_new_instruction_does_not_re
     second_payload = event_payload()
     second_payload["webhookId"] = "hook-follow-up-cache-2"
     second_payload["webhookTimestamp"] = 1_700_000_000_300
-    second_payload["agentSession"]["comment"]["body"] = (
-        "This thread is for an agent session with productagent."
-    )
+    second_payload["action"] = "prompted"
+    second_payload["agentActivity"] = {
+        "id": "activity-user-followup-4b",
+        "type": "comment",
+        "body": "Why are you just repeating yourself?",
+        "user": {"id": "founder-1"},
+        "createdAt": "2026-06-17T13:08:36Z",
+    }
     second_payload["agentSession"]["previousComments"] = [
         {
             "id": "comment-shared-source",
@@ -567,6 +591,11 @@ def test_advisory_follow_up_with_same_source_ids_but_new_instruction_does_not_re
                 "User: make this a narrow plan for a single workflow, and exclude bulk actioning."
             ),
             "userId": "founder-1",
+        },
+        {
+            "id": "comment-shared-agent",
+            "body": "ProductAgent: here is the usual checklist.",
+            "userId": "app-user-1",
         }
     ]
     second_body = json.dumps(second_payload, separators=(",", ":"), sort_keys=True).encode()
@@ -646,12 +675,159 @@ def test_advisory_follow_up_retries_on_exact_user_wording_without_boilerplate(
 
     assert result.status == "accepted"
     response_body = clients[0].activities[-1][1]["body"]
-    assert response_body.startswith(
-        "You asked me to answer back based on the thread and your clarifying answers."
-    )
-    assert "Build a single Gmail inbox triage workflow" in response_body
+    assert response_body.startswith("I’m answering the latest turn directly.")
     assert "Request received" not in response_body
     assert "Clarifying questions" not in response_body
+    installation_store.close()
+    receipt_store.close()
+
+
+def test_multi_turn_conversation_uses_current_prompt_and_reuses_only_duplicate_turns(
+    tmp_path: Path,
+) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    counting_model = CountingModel()
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=counting_model,
+    )
+
+    def send_turn(
+        webhook_id: str,
+        activity_id: str,
+        body_text: str,
+        previous_comments: list[dict[str, object]],
+        *,
+        timestamp: int,
+    ) -> str:
+        payload = event_payload()
+        payload["webhookId"] = webhook_id
+        payload["webhookTimestamp"] = timestamp
+        payload["action"] = "prompted"
+        payload["agentActivity"] = {
+            "id": activity_id,
+            "type": "comment",
+            "body": body_text,
+            "user": {"id": "founder-1"},
+            "createdAt": "2026-06-17T13:08:35Z",
+        }
+        payload["agentSession"]["previousComments"] = previous_comments
+        raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+        result = service.handle_webhook(
+            raw,
+            {"Linear-Signature": create_signature(b"webhook-secret", raw)},
+            now_ms=timestamp,
+        )
+        assert result.status == "accepted"
+        return clients[-1].activities[-1][1]["body"]
+
+    turn1_body = send_turn(
+        "hook-turn-1",
+        "activity-turn-1",
+        (
+            "@productagent : can you check PRO-10 and the answer I gave you and ideate "
+            "with me on the email agent?"
+        ),
+        [],
+        timestamp=1_700_000_001_000,
+    )
+    turn2_body = send_turn(
+        "hook-turn-2",
+        "activity-turn-2",
+        "Do you have any questions for me or is it clear at this point?",
+        [
+            {
+                "id": "turn-1-response",
+                "body": turn1_body,
+                "userId": "app-user-1",
+            }
+        ],
+        timestamp=1_700_000_001_100,
+    )
+    turn3_body = send_turn(
+        "hook-turn-3",
+        "activity-turn-3",
+        "Why are you just repeating yourself?",
+        [
+            {
+                "id": "turn-2-response",
+                "body": turn2_body,
+                "userId": "app-user-1",
+            }
+        ],
+        timestamp=1_700_000_001_200,
+    )
+    turn4_body = send_turn(
+        "hook-turn-4",
+        "activity-turn-4",
+        "Can you give me the specs?",
+        [
+            {
+                "id": "turn-3-response",
+                "body": turn3_body,
+                "userId": "app-user-1",
+            }
+        ],
+        timestamp=1_700_000_001_300,
+    )
+    turn5_body = send_turn(
+        "hook-turn-5",
+        "activity-turn-5",
+        "What do I reference in order to approve?",
+        [
+            {
+                "id": "turn-4-response",
+                "body": turn4_body,
+                "userId": "app-user-1",
+            }
+        ],
+        timestamp=1_700_000_001_400,
+    )
+    duplicate_turn5_body = send_turn(
+        "hook-turn-5-duplicate",
+        "activity-turn-5",
+        "What do I reference in order to approve?",
+        [
+            {
+                "id": "turn-4-response",
+                "body": turn4_body,
+                "userId": "app-user-1",
+            }
+        ],
+        timestamp=1_700_000_001_500,
+    )
+
+    assert turn1_body.startswith("Request received")
+    assert turn2_body.startswith("It is mostly clear")
+    assert turn3_body.startswith("You're right.")
+    assert "Version: `brief-pst-1-v1`" in turn4_body
+    assert "APPROVE SPEC brief-pst-1-v1" in turn5_body
+    assert turn5_body == duplicate_turn5_body
+    assert counting_model.calls == 1
     installation_store.close()
     receipt_store.close()
 
