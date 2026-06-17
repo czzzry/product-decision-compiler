@@ -762,7 +762,10 @@ class LiveProductAgentService:
                 source_type = "comment"
                 source_comment_id = comment.id
                 if self._looks_like_thread_starter(instruction):
-                    latest_previous = self._latest_previous_comment(session.previous_comments)
+                    latest_previous = self._latest_previous_human_comment(
+                        session.previous_comments,
+                        event.app_user_id,
+                    )
                     if latest_previous is not None:
                         instruction = latest_previous.body.strip()
                         source_comment_id = latest_previous.id
@@ -868,12 +871,19 @@ class LiveProductAgentService:
         return normalized == "this thread is for an agent session with productagent."
 
     @staticmethod
-    def _latest_previous_comment(
+    def _latest_previous_human_comment(
         comments: list[LiveLinearComment],
+        app_user_id: str,
     ) -> LiveLinearComment | None:
         for comment in reversed(comments):
-            if comment.body.strip():
-                return comment
+            if not comment.body.strip():
+                continue
+            actor_id = LiveProductAgentService._extract_actor_id_from_comment(comment)
+            if actor_id == app_user_id:
+                continue
+            if LiveProductAgentService._looks_like_thread_starter(comment.body):
+                continue
+            return comment
         return None
 
     @staticmethod
