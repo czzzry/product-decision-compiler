@@ -772,12 +772,33 @@ class LiveProductAgentService:
                 activity_typename=None,
             )
 
+        inline_activity = event.agent_activity
+        if inline_activity is not None and self._activity_instruction(inline_activity):
+            return CommandEnvelope(
+                webhook_action=event.action,
+                agent_session_id=session.id,
+                actor_linear_user_id=(
+                    self._actor_from_activity(inline_activity)
+                    or (
+                        self._extract_actor_id_from_comment(comment)
+                        if comment is not None
+                        else None
+                    )
+                )
+                or event.app_user_id,
+                source_type="comment",
+                exact_current_instruction=self._activity_instruction(inline_activity),
+                source_agent_activity_id=self._source_activity_id(inline_activity),
+                source_comment_id=None,
+                source_event_id=self._source_event_id(event),
+                received_at_ms=event.webhook_timestamp,
+                signals=self._activity_signals(inline_activity),
+                activity_typename=self._activity_kind(inline_activity),
+            )
+
         if comment is not None:
             comment_instruction = comment.body.strip()
-            if comment_instruction and (
-                classify_approval_command(comment_instruction).kind != "none"
-                or comment_instruction.lower() == "stop"
-            ):
+            if comment_instruction:
                 return CommandEnvelope(
                     webhook_action=event.action,
                     agent_session_id=session.id,

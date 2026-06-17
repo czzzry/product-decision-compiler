@@ -17,8 +17,10 @@ from ai_native_studio.product_agent_proof.providers import (
     type_to_text_format_param,
 )
 
-PRODUCT_BRIEF_REQUEST_PATTERN = re.compile(
-    r"(?is)\bcreate\b.*\bversioned\b.*\bproduct brief\b"
+PRODUCT_BRIEF_REQUEST_PATTERNS = (
+    re.compile(r"(?is)\bcreate\b.*\bversioned\b.*\bproduct brief\b"),
+    re.compile(r"(?is)\bwhat\s+spec\s+do you have\s+for\s+(?:this|it)\b"),
+    re.compile(r"(?is)\bwhat(?:'s| is)?\s+the\s+spec\b"),
 )
 APPROVAL_COMMAND_PATTERN = re.compile(r"^APPROVE SPEC ([A-Za-z0-9._-]+)$")
 APPROVAL_FENCED_CODE_PATTERN = re.compile(
@@ -712,7 +714,8 @@ class ProductBriefService:
 
 
 def requests_product_brief(text: str) -> bool:
-    return bool(PRODUCT_BRIEF_REQUEST_PATTERN.search(text))
+    normalized = _normalize_text(text)
+    return any(pattern.search(normalized) for pattern in PRODUCT_BRIEF_REQUEST_PATTERNS)
 
 
 def classify_approval_command(text: str) -> ApprovalCommandClassification:
