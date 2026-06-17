@@ -1201,7 +1201,34 @@ class LiveProductAgentService:
         if activity is None:
             return ""
         body = LiveProductAgentService._extract_metadata_value(activity, "body")
-        return body.strip() if body else ""
+        if body:
+            return body.strip()
+        raw = LiveProductAgentService._extract_raw_metadata(activity)
+        content = raw.get("content")
+        return LiveProductAgentService._content_text(content)
+
+    @staticmethod
+    def _content_text(content: object) -> str:
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = [
+                LiveProductAgentService._content_text(item)
+                for item in content
+            ]
+            return "\n".join(part for part in parts if part)
+        if not isinstance(content, dict):
+            return ""
+        for key in ("body", "text", "value", "markdown", "raw", "prompt"):
+            value = content.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        parts: list[str] = []
+        for value in content.values():
+            part = LiveProductAgentService._content_text(value)
+            if part:
+                parts.append(part)
+        return "\n".join(parts)
 
     @staticmethod
     def _activity_instruction(activity: object | None) -> str:

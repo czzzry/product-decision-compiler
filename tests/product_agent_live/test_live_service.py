@@ -853,6 +853,75 @@ def test_thread_starter_prompt_uses_latest_issue_comment_when_session_comment_is
     receipt_store.close()
 
 
+def test_prompted_turn_uses_agent_activity_content_when_body_is_missing(
+    tmp_path: Path,
+) -> None:
+    live_config = config(tmp_path)
+    installation_store = InstallationStore(
+        live_config.database_path,
+        live_config.token_encryption_key,
+    )
+    installation_store.save_installation(
+        StoredInstallation(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            expires_at_ms=9_999_999_999,
+            scope=("read", "write", "comments:create", "app:assignable", "app:mentionable"),
+        )
+    )
+    receipt_store = WebhookReceiptStore()
+    clients: list[RecordingGraphClient] = []
+
+    def factory(access_token: str) -> RecordingGraphClient:
+        client = RecordingGraphClient(access_token)
+        clients.append(client)
+        return client
+
+    service = LiveProductAgentService(
+        live_config,
+        receipt_store=receipt_store,
+        installation_store=installation_store,
+        oauth_client=StubOAuthClient(),
+        graph_client_factory=factory,
+        model=RejectingAdvisoryModel(),
+    )
+    payload = event_payload()
+    payload["webhookId"] = "hook-agent-activity-content"
+    payload["action"] = "prompted"
+    payload["agentActivity"] = {
+        "id": "activity-user-followup-content",
+        "type": "comment",
+        "body": "",
+        "content": {
+            "body": "Why are you repeating yourself?",
+        },
+        "user": {"id": "founder-1"},
+        "createdAt": "2026-06-17T14:50:40Z",
+    }
+    payload["agentSession"]["previousComments"] = [
+        {"id": "comment-previous-1", "body": "Just me.", "userId": "founder-1"},
+        {
+            "id": "comment-app-response",
+            "body": "ProductAgent: here is the usual checklist.",
+            "userId": "app-user-1",
+        },
+    ]
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+
+    result = service.handle_webhook(
+        body,
+        {"Linear-Signature": create_signature(b"webhook-secret", body)},
+        now_ms=1_700_000_000_700,
+    )
+
+    assert result.status == "accepted"
+    response_body = clients[0].activities[-1][1]["body"]
+    assert response_body.startswith("You're right.")
+    assert "Request received" not in response_body
+    installation_store.close()
+    receipt_store.close()
+
+
 def test_multi_turn_conversation_uses_current_prompt_and_reuses_only_duplicate_turns(
     tmp_path: Path,
 ) -> None:
