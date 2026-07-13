@@ -22,9 +22,11 @@ product-agent-demo = "ai_native_studio.product_agent_proof.demo:main"
 product-agent-intelligence-demo = "ai_native_studio.product_agent_proof.intelligence_demo:main"
 product-agent-server = "ai_native_studio.product_agent_proof.server:main"
 product-agent-live-server = "ai_native_studio.product_agent_live.server:main"
+product-decision-compiler-demo = "ai_native_studio.product_decision_compiler.demo:main"
 
 [tool.setuptools.package-data]
 "ai_native_studio.product_agent_proof" = ["config/*.json", "config/*.md"]
+"ai_native_studio.product_decision_compiler" = ["fixtures/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
