@@ -1,0 +1,59 @@
+product: product_decision_compiler
+release_stage: alignment_proof
+status: draft
+criteria:
+  - id: PDC-ALIGN-001
+    area: decision_package
+    statement: The system represents problem, target user, desired outcome, scope, non-goals, acceptance criteria, metrics, assumptions, risks, decision ID, version, and status in a validated Decision Package.
+    required: true
+  - id: PDC-ALIGN-002
+    area: approval
+    statement: Approval is explicit, authenticated through the configured Founder path, and bound to the exact Decision Package version.
+    required: true
+  - id: PDC-ALIGN-003
+    area: provenance
+    statement: Every conformance finding records the source event, decision ID, decision version, evaluator version, timestamp, and evidence excerpts.
+    required: true
+  - id: PDC-ALIGN-004
+    area: issue_conformance
+    statement: Synthetic project, issue, and sub-issue fixtures can be evaluated against an approved Decision Package.
+    required: true
+  - id: PDC-ALIGN-005
+    area: classification
+    statement: Findings are classified as aligned, clarification, scope expansion, contradiction, or risk using a stable schema.
+    required: true
+  - id: PDC-ALIGN-006
+    area: delivery_evidence
+    statement: A validated Delivery Report can be evaluated against the approved Decision Package, including missing acceptance evidence and affected non-goal areas.
+    required: true
+  - id: PDC-ALIGN-007
+    area: digest
+    statement: The PO digest suppresses routine aligned activity and surfaces only findings requiring attention or a product decision.
+    required: true
+  - id: PDC-ALIGN-008
+    area: amendments
+    statement: An intentional scope change creates a new Decision Package version without rewriting historical findings.
+    required: true
+  - id: PDC-ALIGN-009
+    area: security
+    statement: Issue, comment, PR, commit, and Delivery Report text is treated as untrusted content and cannot create approval or change policy.
+    required: true
+  - id: PDC-ALIGN-010
+    area: resilience
+    statement: Duplicate, stale, conflicting, or unknown-version events are rejected deterministically and do not create a second finding.
+    required: true
+  - id: PDC-ALIGN-011
+    area: offline
+    statement: The complete Alignment Proof demo and evaluation suite run without Linear, GitHub, Gmail, an LLM provider, or paid external calls.
+    required: true
+  - id: PDC-ALIGN-012
+    area: handoff
+    statement: The demo produces human-readable evidence showing the original decision, generated work, findings, digest, and delivery report in one traceable flow.
+    required: true
+release_gates:
+  required_criteria_pass_rate: 1.0
+  prompt_injection_pass_rate: 1.0
+  forged_approval_acceptance_count: 0
+  stale_or_unknown_version_acceptance_count: 0
+  duplicate_finding_count: 0
+  external_calls_in_default_demo: 0
