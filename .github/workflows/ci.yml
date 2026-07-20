@@ -8,11 +8,12 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  product-decision-compiler:
+    name: Product Decision Compiler
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Install dependencies
@@ -20,6 +21,21 @@ jobs:
       - name: Lint
         run: ruff check .
       - name: Test
-        run: python -m pytest -p no:cacheprovider tests
+        run: python -m pytest -p no:cacheprovider tests/product_decision_compiler
       - name: Run offline Alignment Proof
         run: product-decision-compiler-demo
+      - name: Run the synthetic integrations proof
+        run: product-decision-compiler-integrations-demo
+
+  legacy-regression:
+    name: Earlier ProductAgent regression suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install -e '.[dev,live]'
+      - name: Run the complete historical suite
+        run: python -m pytest -p no:cacheprovider tests

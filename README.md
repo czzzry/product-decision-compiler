@@ -15,14 +15,15 @@ Python · Pydantic · Linear GraphQL · GitHub REST · deterministic conformance
 
 ![Interactive evidence review](docs/demo/evidence-review.png)
 
-The [interactive evidence review](https://czzzry.github.io/ai-native-studio/) makes the product
+The [interactive evidence review](https://czzzry.github.io/product-decision-compiler/) makes the product
 claim concrete: one onboarding decision, the linked work, and three findings that deserve a product
 owner’s attention. It is backed by the same synthetic provider evidence used by the local integration
 proof—rather than invented dashboard activity. Its [source](docs/demo/index.html) is included here.
 
-This repository favours a small, inspectable proof over a broad product pitch. A reviewer can:
+This repository favours a small, inspectable proof over a broad product pitch.
+You can:
 
-- open the evidence review above and trace a finding back to its decision link;
+- open the evidence review and trace a finding back to its decision link;
 - run two local demos without accounts, secrets, or network access; and
 - inspect the read-only adapters and regression tests that support the claim.
 
@@ -69,7 +70,7 @@ network connection. It produces a concise product-owner digest, not an activity 
 Run the tests with:
 
 ```bash
-.venv/bin/python -m pytest -p no:cacheprovider tests
+.venv/bin/python -m pytest -p no:cacheprovider tests/product_decision_compiler
 ```
 
 ## What works today
@@ -112,9 +113,14 @@ pagination, and durable external storage are deliberately outside this repositor
 - [Read-only Linear/GitHub adapters](src/ai_native_studio/product_decision_compiler/integrations.py)
 - [Tests](tests/product_decision_compiler/)
 
-The repository also includes the earlier ProductAgent foundation. It remains as context; Product
-Decision Compiler is the public centre of gravity.
+## Earlier ProductAgent work
+
+The repository includes an earlier ProductAgent proof and live service that established the approval, authority, and provider boundaries used here.
+That work remains available as historical context, while Product Decision Compiler is the current product and the default offline experience.
+Its cloud dependencies are optional and can be installed with `pip install -e '.[live]'`.
+The legacy container is intentionally named `Dockerfile.product-agent-live` so it cannot be mistaken for the main product demo.
 
 ## License
 
-[MIT](LICENSE) — use it, change it, build on it, or sell it. Keep the copyright and license notice.
+[MIT](LICENSE) - use it, change it, build on it, or sell it.
+Keep the copyright and license notice.
