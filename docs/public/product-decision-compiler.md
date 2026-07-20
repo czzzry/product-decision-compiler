@@ -61,3 +61,7 @@ scope, authorize implementation, or release software.
 The next meaningful validation is a small human review using synthetic product scenarios. The test
 is simple: can a PO identify the one item requiring attention without reading the underlying activity
 log? If not, the product should be improved before any live Linear or GitHub integration is added.
+
+## License
+
+This project is released under the [MIT License](../../LICENSE).

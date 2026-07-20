@@ -1,5 +1,7 @@
 # ai-native-studio
 
+> The decision layer between product intent and AI-built software.
+
 `ai-native-studio` is a workflow-design repository for a founder-led AI product operating model.
 The strongest implemented slice today is `Product Decision Compiler`: an alignment layer that turns
 PO intent into an approved decision, checks agent-generated work against that decision, and reports
@@ -123,6 +125,9 @@ The demo produces an approved Decision Package, four work-item findings, a missi
 duplicate and stale-version rejections, and a concise PO digest. It makes no Linear, GitHub, Gmail,
 or model-provider calls.
 
+If the demo works, the useful output is not “the agent did more work.” It is “the PO can see exactly
+where the work no longer matches the decision.”
+
 ## Demo Artifacts
 
 This repository already includes documentation artifacts that are useful in a portfolio review:
@@ -225,3 +230,7 @@ For a hiring manager reviewing AI workflow work, this repository shows:
 - `docs/milestones/`: milestone evidence
 - `docs/public/`: public-facing writeups
 - `tests/`: automated checks for the proof and live-service layers
+
+## License
+
+This project is released under the [MIT License](LICENSE).
