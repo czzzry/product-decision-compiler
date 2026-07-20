@@ -17,9 +17,7 @@ client_secret*.json
 
 # Private data and generated private outputs
 data/private/**
-!data/private/.gitkeep
 outputs/private/**
-!outputs/private/.gitkeep
 private_email/
 gmail_exports/
 mail_exports/
