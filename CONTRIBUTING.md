@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for taking an interest in `ai-native-studio`.
+Thanks for taking an interest in Product Decision Compiler.
 
 This repository is an experiment in founder-led, AI-assisted product development. Contributions
 should preserve the central boundary: models may advise and interpret, while deterministic code

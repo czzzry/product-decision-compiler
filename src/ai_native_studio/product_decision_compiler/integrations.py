@@ -234,7 +234,7 @@ class LinearReadOnlyAdapter:
                     else f"Bearer {self._api_key}"
                 ),
                 "Content-Type": "application/json",
-                "User-Agent": "ai-native-studio-product-decision-compiler/0.1",
+                "User-Agent": "product-decision-compiler/0.1",
             },
             payload=json.dumps(
                 {"query": self._QUERY, "variables": {"teamId": team_id, "first": first}}
@@ -482,7 +482,7 @@ class GitHubReadOnlyAdapter:
             url = f"{url}?{query}"
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": "ai-native-studio-product-decision-compiler/0.1",
+            "User-Agent": "product-decision-compiler/0.1",
         }
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
