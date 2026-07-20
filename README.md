@@ -15,10 +15,10 @@ Python · Pydantic · Linear GraphQL · GitHub REST · deterministic conformance
 
 ![Interactive evidence review](docs/demo/evidence-review.png)
 
-The [evidence review source](docs/demo/index.html) makes the product claim concrete: one onboarding
-decision, the linked work, and three findings that deserve a product owner’s attention. It is backed
-by the same synthetic provider evidence used by the local integration proof—rather than invented
-dashboard activity.
+The [interactive evidence review](https://czzzry.github.io/ai-native-studio/) makes the product
+claim concrete: one onboarding decision, the linked work, and three findings that deserve a product
+owner’s attention. It is backed by the same synthetic provider evidence used by the local integration
+proof—rather than invented dashboard activity. Its [source](docs/demo/index.html) is included here.
 
 This repository favours a small, inspectable proof over a broad product pitch. A reviewer can:
 
