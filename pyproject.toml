@@ -14,7 +14,7 @@ dev = [
   "ruff>=0.5",
 ]
 live = [
-  "cryptography==46.0.3",
+  "cryptography==48.0.1",
   "google-cloud-firestore>=2.21",
   "openai>=2.0,<3",
 ]
