@@ -18,9 +18,9 @@ controls identity, approval, versioning, side effects, and release eligibility.
 ## Local checks
 
 ```bash
-.venv/bin/ruff check .
-.venv/bin/python -m pytest -p no:cacheprovider tests
-.venv/bin/product-decision-compiler-demo
+make lint
+make test
+make demo
 ```
 
 ## Pull requests

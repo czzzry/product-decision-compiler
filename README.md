@@ -51,11 +51,11 @@ the decision.
 
 ## Run the proof
 
+From a fresh checkout, one command installs the small offline environment and runs both synthetic
+proofs:
+
 ```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -e '.[dev]'
-.venv/bin/product-decision-compiler-demo
-.venv/bin/product-decision-compiler-integrations-demo
+make demo
 ```
 
 The first demo exercises the core decision-conformance flow. The second uses synthetic Linear and
@@ -67,10 +67,18 @@ network connection. It produces a concise product-owner digest, not an activity 
 • risk / high — Work touches a security-sensitive area outside the decision.
 ```
 
-Run the tests with:
+To install and run the commands separately:
 
 ```bash
-.venv/bin/python -m pytest -p no:cacheprovider tests/product_decision_compiler
+make install
+.venv/bin/product-decision-compiler-demo
+.venv/bin/product-decision-compiler-integrations-demo
+```
+
+Run the focused tests with:
+
+```bash
+make test
 ```
 
 ## What works today
@@ -115,10 +123,13 @@ pagination, and durable external storage are deliberately outside this repositor
 
 ## Earlier ProductAgent work
 
-The repository includes an earlier ProductAgent proof and live service that established the approval, authority, and provider boundaries used here.
-That work remains available as historical context, while Product Decision Compiler is the current product and the default offline experience.
-Its cloud dependencies are optional and can be installed with `pip install -e '.[live]'`.
-The legacy container is intentionally named `Dockerfile.product-agent-live` so it cannot be mistaken for the main product demo.
+An earlier ProductAgent proof established the approval, authority, and provider boundaries used here.
+Its [archived case study](https://github.com/czzzry/product-agent-v0.1-case-study) preserves the product
+story, while the compatibility implementation remains in this repository for existing commands and
+regression coverage. Product Decision Compiler is the current product and the default offline
+experience. The older cloud dependencies stay optional behind `pip install -e '.[live]'`, and its
+container remains explicitly named `Dockerfile.product-agent-live` so it cannot be mistaken for the
+main product demo.
 
 ## License
 

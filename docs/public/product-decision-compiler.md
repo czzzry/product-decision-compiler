@@ -12,14 +12,10 @@ quiet digest containing only meaningful scope drift, risk, or missing delivery e
 
 ## The proof
 
-The public proof runs entirely locally with synthetic Linear-shaped data:
+The public proof runs entirely locally with synthetic Linear-shaped data. Follow the README's
+[run instructions](../../README.md#run-the-proof) for the one-command setup and both synthetic demos.
 
-```bash
-.venv/bin/python -m pip install -e '.[dev]'
-.venv/bin/product-decision-compiler-demo
-```
-
-The demo follows one decision through the complete loop:
+The core demo follows one decision through the complete loop:
 
 1. Create an approved onboarding decision with explicit scope and non-goals.
 2. Evaluate aligned work.
